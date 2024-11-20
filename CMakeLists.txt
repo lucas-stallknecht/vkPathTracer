@@ -15,7 +15,7 @@ file(GLOB_RECURSE SOURCES
 add_executable(${PROJECT_NAME} main.cpp ${SOURCES})
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
-        CXX_STANDARD 17
+        CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF
         COMPILE_WARNING_AS_ERROR ON
@@ -32,4 +32,7 @@ target_include_directories(${PROJECT_NAME}
 
 add_subdirectory(${LIBS_DIR}/glfw-3.4)
 target_link_libraries(${PROJECT_NAME} PRIVATE glfw ${Vulkan_LIBRARIES})
+
+file(COPY shaders DESTINATION ${CMAKE_BINARY_DIR})
+
 
