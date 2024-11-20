@@ -31,7 +31,8 @@ target_include_directories(${PROJECT_NAME}
 )
 
 add_subdirectory(${LIBS_DIR}/glfw-3.4)
-target_link_libraries(${PROJECT_NAME} PRIVATE glfw ${Vulkan_LIBRARIES})
+add_subdirectory(${LIBS_DIR}/vma)
+target_link_libraries(${PROJECT_NAME} PRIVATE glfw ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator)
 
 file(COPY shaders DESTINATION ${CMAKE_BINARY_DIR})
 

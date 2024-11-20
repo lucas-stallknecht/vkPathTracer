@@ -4,7 +4,10 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
+#define VMA_IMPLEMENTATION
+#include <vma/vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
+
 
 #include <iostream>
 #include <stdexcept>
@@ -17,8 +20,7 @@
 #include <limits>
 #include <algorithm>
 #include <fstream>
-#include <array>
-#include <assert.h>
+#include <cassert>
 
 #ifdef NDEBUG
     constexpr bool enableValidationLayers = false;
@@ -38,7 +40,7 @@ const std::vector<const char*> validationLayers = {
 
 const std::vector<const char*> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-    VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+    VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
 };
 
 
@@ -92,14 +94,23 @@ private:
     VkQueue presentQueue = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
 
+    VmaAllocator allocator;
+
     VkSwapchainKHR swapChain = VK_NULL_HANDLE;
     std::vector<VkImage> swapChainImages;
-    std::vector<VkImageView> swapChainImageViews;
     VkFormat swapChainImageFormat = VK_FORMAT_UNDEFINED;
     VkExtent2D swapChainExtent = {0, 0};
 
+    VkImage intermediateImage = VK_NULL_HANDLE;
+    VkImageView intermediateImageView = VK_NULL_HANDLE;
+
     VkPipeline computePipeline = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet descSet = VK_NULL_HANDLE;
     VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descPool = VK_NULL_HANDLE;
+
+
 
     FrameData frames[FRAME_OVERLAP];
     FrameData& getCurrentFrame() { return frames[frameNumber % FRAME_OVERLAP]; }
@@ -120,10 +131,19 @@ private:
         pickPhysicalDevice();
         createLogicaldevice();
         createSwapChain();
-        createImageViews();
+
+        VmaAllocatorCreateInfo allocatorInfo = {};
+        allocatorInfo.physicalDevice = physicalDevice;
+        allocatorInfo.device = device;
+        allocatorInfo.instance = instance;
+        allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        vmaCreateAllocator(&allocatorInfo, &allocator);
+
+        createIntermediateImage();
         createComputePipeline();
         createCommandPoolAndBuffer();
         createSyncObjects();
+        createDescriptors();
     }
 
     static bool checkValidationLayerSupport()
@@ -365,28 +385,41 @@ private:
         swapChainExtent = swapExtent;
     }
 
-    void createImageViews() {
-        swapChainImageViews.resize(swapChainImages.size());
+    void createIntermediateImage() {
 
-        for (size_t i = 0; i < swapChainImages.size(); i++) {
-            VkImageViewCreateInfo createInfo{};
-            createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            createInfo.image = swapChainImages[i];
-            createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            createInfo.format = swapChainImageFormat;
-            createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            createInfo.subresourceRange.baseMipLevel = 0;
-            createInfo.subresourceRange.levelCount = 1;
-            createInfo.subresourceRange.baseArrayLayer = 0;
-            createInfo.subresourceRange.layerCount = 1;
+        VkImageCreateInfo imageCreateInfo{};
+        imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageCreateInfo.pNext = nullptr;
+        imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageCreateInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        imageCreateInfo.extent = { swapChainExtent.width, swapChainExtent.height, 1 };
+        imageCreateInfo.mipLevels = 1;
+        imageCreateInfo.arrayLayers = 1;
+        imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageCreateInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
-            if (vkCreateImageView(device, &createInfo, nullptr, &swapChainImageViews[i]) != VK_SUCCESS) {
-                throw std::runtime_error("Failed to create swap chain image views!");
-            }
+        VmaAllocationCreateInfo rimg_allocinfo = {};
+        rimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+        rimg_allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        //allocate and create the image
+        VmaAllocation all;
+        vmaCreateImage(allocator, &imageCreateInfo, &rimg_allocinfo, &intermediateImage, &all, nullptr);
+
+        VkImageViewCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        createInfo.image = intermediateImage;
+        createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        createInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        createInfo.subresourceRange.baseMipLevel = 0;
+        createInfo.subresourceRange.levelCount = 1;
+        createInfo.subresourceRange.baseArrayLayer = 0;
+        createInfo.subresourceRange.layerCount = 1;
+
+        if (vkCreateImageView(device, &createInfo, nullptr, &intermediateImageView) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create intermediate image view!");
         }
 
     }
@@ -452,11 +485,17 @@ private:
     void createLogicaldevice()
     {
         VkPhysicalDeviceFeatures deviceFeatures{
-            VK_KHR_synchronization2
+            VK_KHR_synchronization2,
         };
         VkPhysicalDeviceSynchronization2Features synchronization2Features{};
         synchronization2Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
         synchronization2Features.synchronization2 = VK_TRUE;
+
+        VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
+        bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+        bufferDeviceAddressFeatures.bufferDeviceAddress = VK_TRUE;
+        bufferDeviceAddressFeatures.pNext = &synchronization2Features;
+
 
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 
@@ -477,7 +516,7 @@ private:
 
         VkDeviceCreateInfo deviceCreateInfo{};
         deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        deviceCreateInfo.pNext = &synchronization2Features;
+        deviceCreateInfo.pNext = &bufferDeviceAddressFeatures;
         deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
         deviceCreateInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
         deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
@@ -550,13 +589,13 @@ private:
         imageBind.descriptorCount = 1;
         imageBind.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         imageBind.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
         VkDescriptorSetLayoutCreateInfo setLayoutInfo{};
         setLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         setLayoutInfo.bindingCount = 1;
         setLayoutInfo.pBindings = &imageBind;
 
-        VkDescriptorSetLayout setLayout;
-        if(vkCreateDescriptorSetLayout(device, &setLayoutInfo, nullptr, &setLayout) != VK_SUCCESS)
+        if(vkCreateDescriptorSetLayout(device, &setLayoutInfo, nullptr, &descSetLayout) != VK_SUCCESS)
         {
             throw std::runtime_error("Could not create descriptor set layout!");
         }
@@ -564,8 +603,9 @@ private:
 
         VkPipelineLayoutCreateInfo computePipelineLayoutInfo{};
         computePipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        computePipelineLayoutInfo.pNext = nullptr;
         computePipelineLayoutInfo.setLayoutCount = 1;
-        computePipelineLayoutInfo.pSetLayouts = &setLayout;
+        computePipelineLayoutInfo.pSetLayouts = &descSetLayout;
 
         if(vkCreatePipelineLayout(device, &computePipelineLayoutInfo, nullptr, &computePipelineLayout) != VK_SUCCESS)
         {
@@ -581,7 +621,6 @@ private:
             throw std::runtime_error("Failed to create compute pipeline!");
         }
 
-        vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
         vkDestroyShaderModule(device, compModule, nullptr);
     }
 
@@ -629,6 +668,54 @@ private:
                 throw std::runtime_error("Failed to create semaphores and fence!");
             }
         }
+    }
+
+    void createDescriptors()
+    {
+        float ratio = 1.0;
+        float maxSets =  10.0;
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        poolSize.descriptorCount = uint32_t(ratio * maxSets);
+
+
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.flags = 0;
+        poolInfo.maxSets = maxSets;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+
+        if(vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Could not create descriptor pool!");
+        }
+
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.pNext = nullptr;
+        allocInfo.descriptorPool = descPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &descSetLayout;
+
+        if(vkAllocateDescriptorSets(device, &allocInfo, &descSet) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Could not allocate descriptor set!");
+        }
+
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        imgInfo.imageView = intermediateImageView;
+        VkWriteDescriptorSet drawImageWrite{};
+        drawImageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        drawImageWrite.pNext = nullptr;
+        drawImageWrite.dstBinding = 0;
+        drawImageWrite.dstSet = descSet;
+        drawImageWrite.descriptorCount = 1;
+        drawImageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        drawImageWrite.pImageInfo = &imgInfo;
+
+        vkUpdateDescriptorSets(device, 1, &drawImageWrite, 0, nullptr);
     }
 
     VkImageSubresourceRange getImageSubresourceRange(VkImageAspectFlags aspectMask)
@@ -689,19 +776,50 @@ private:
             throw std::runtime_error("Could not begin command buffer!");
         }
 
-        //make the swapchain image into writeable mode before rendering
-        transitionImage(cmd, swapChainImages[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-        //make a clear-color from frame number. This will flash with a 120 frame period.
+        transitionImage(cmd, intermediateImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+
         VkClearColorValue clearValue;
         float flash = std::abs(std::sin(frameNumber / 120.f));
         clearValue = { { 0.0f, 0.0f, flash, 1.0f } };
         VkImageSubresourceRange clearRange = getImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT);
-        //clear image
-        vkCmdClearColorImage(cmd, swapChainImages[imageIndex], VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
-        //make the swapchain image into presentable mode
-        transitionImage(cmd, swapChainImages[imageIndex],VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        vkCmdClearColorImage(cmd, intermediateImage, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
 
-        //finalize the command buffer (we can no longer add commands, but it can now be executed)
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &descSet, 0, nullptr);
+        vkCmdDispatch(cmd, std::ceil(swapChainExtent.width / 16.0), std::ceil(swapChainExtent.height / 16.0), 1);
+
+        transitionImage(cmd, intermediateImage,VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        transitionImage(cmd, swapChainImages[imageIndex],VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+
+        VkImageBlit2 blitRegion{ .sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2, .pNext = nullptr };
+        blitRegion.srcOffsets[1].x = swapChainExtent.width;
+        blitRegion.srcOffsets[1].y = swapChainExtent.height;
+        blitRegion.srcOffsets[1].z = 1;
+        blitRegion.dstOffsets[1].x = swapChainExtent.width;
+        blitRegion.dstOffsets[1].y = swapChainExtent.height;
+        blitRegion.dstOffsets[1].z = 1;
+        blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blitRegion.srcSubresource.baseArrayLayer = 0;
+        blitRegion.srcSubresource.layerCount = 1;
+        blitRegion.srcSubresource.mipLevel = 0;
+        blitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blitRegion.dstSubresource.baseArrayLayer = 0;
+        blitRegion.dstSubresource.layerCount = 1;
+        blitRegion.dstSubresource.mipLevel = 0;
+
+        VkBlitImageInfo2 blitInfo{ .sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2, .pNext = nullptr };
+        blitInfo.dstImage = swapChainImages[imageIndex];
+        blitInfo.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        blitInfo.srcImage = intermediateImage;
+        blitInfo.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        blitInfo.filter = VK_FILTER_LINEAR;
+        blitInfo.regionCount = 1;
+        blitInfo.pRegions = &blitRegion;
+        vkCmdBlitImage2(cmd, &blitInfo);
+
+        transitionImage(cmd, swapChainImages[imageIndex],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
         if(vkEndCommandBuffer(cmd) != VK_SUCCESS)
         {
             throw std::runtime_error("Could not record command buffer!");
@@ -775,11 +893,12 @@ private:
             vkDestroySemaphore(device, frame.swapSemaphore, nullptr);
             vkDestroyFence(device, frame.renderFence, nullptr);
         }
+        vkDestroyDescriptorPool(device, descPool, nullptr);
         vkDestroyPipeline(device, computePipeline, nullptr);
         vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
-        for (auto imageView : swapChainImageViews) {
-            vkDestroyImageView(device, imageView, nullptr);
-        }
+        vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
+        vkDestroyImageView(device, intermediateImageView, nullptr);
+        vkDestroyImage(device, intermediateImage, nullptr);
         vkDestroySwapchainKHR(device, swapChain, nullptr);
         vkDestroyDevice(device, nullptr);
         vkDestroySurfaceKHR(instance, surface, nullptr);
