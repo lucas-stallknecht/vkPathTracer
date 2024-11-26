@@ -26,7 +26,7 @@ namespace pt_utils
     }
 
     VkSubmitInfo2 submitInfo(VkCommandBufferSubmitInfo* cmd, VkSemaphoreSubmitInfo* signalSemaphoreInfo,
-                              VkSemaphoreSubmitInfo* waitSemaphoreInfo)
+                             VkSemaphoreSubmitInfo* waitSemaphoreInfo)
     {
         VkSubmitInfo2 info = {
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
@@ -40,6 +40,39 @@ namespace pt_utils
             .signalSemaphoreInfoCount = static_cast<uint32_t>(signalSemaphoreInfo == nullptr ? 0 : 1),
             .pSignalSemaphoreInfos = signalSemaphoreInfo,
         };
+        return info;
+    }
+
+    VkRenderingAttachmentInfo attachmentInfo(VkImageView view, VkClearValue* clear, VkImageLayout layout)
+    {
+        VkRenderingAttachmentInfo colorAttachment = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = view,
+            .imageLayout = layout,
+            .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        };
+        if (clear)
+        {
+            colorAttachment.clearValue = *clear;
+        }
+
+        return colorAttachment;
+    }
+
+    VkRenderingInfo renderingInfo(VkExtent2D renderExtent, VkRenderingAttachmentInfo* colorAttachment,
+                                  VkRenderingAttachmentInfo* depthAttachment)
+    {
+        VkRenderingInfo info = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = VkRect2D{VkOffset2D{0, 0}, renderExtent},
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = colorAttachment,
+            .pDepthAttachment = depthAttachment,
+            .pStencilAttachment = nullptr
+        };
+
         return info;
     }
 }

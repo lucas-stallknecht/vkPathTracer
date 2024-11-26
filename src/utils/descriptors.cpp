@@ -37,10 +37,7 @@ namespace pt_utils
 
 
         VkDescriptorSetLayout setLayout;
-        if (vkCreateDescriptorSetLayout(device, &info, nullptr, &setLayout) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Could not create descriptor set layout!");
-        }
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &info, nullptr, &setLayout), "Could not create descriptor set layout!");
 
         return setLayout;
     }
@@ -64,10 +61,7 @@ namespace pt_utils
             .pPoolSizes = poolSizes.data(),
         };
 
-        if(vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Could not create descriptor pool!");
-        }
+        VK_CHECK(vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool), "Could not create descriptor pool!");
 
     }
 
@@ -92,10 +86,7 @@ namespace pt_utils
 
 
         VkDescriptorSet ds;
-       if(vkAllocateDescriptorSets(device, &allocInfo, &ds) != VK_SUCCESS)
-       {
-           throw std::runtime_error("Could not allocate descriptor set!");
-       }
+       VK_CHECK(vkAllocateDescriptorSets(device, &allocInfo, &ds), "Could not allocate descriptor set!");
 
         return ds;
     }

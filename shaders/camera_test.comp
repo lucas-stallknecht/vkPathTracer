@@ -1,0 +1,21 @@
+#version 460
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout(rgba16f,set = 0, binding = 0) uniform image2D image;
+
+void main()
+{
+    ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv;
+    uv.x = (float(texelCoord.x) - .5 * gl_NumWorkGroups.x * gl_WorkGroupSize.x);
+    uv.y = (float(texelCoord.y) - .5 * gl_NumWorkGroups.y * gl_WorkGroupSize.x);
+    uv /= gl_WorkGroupSize.xy * gl_NumWorkGroups.xy;
+
+	ivec2 size = imageSize(image);
+
+    if(texelCoord.x < size.x && texelCoord.y < size.y)
+    {
+        imageStore(image, texelCoord, vec4(uv, 0.0, 1.0));
+    }
+}

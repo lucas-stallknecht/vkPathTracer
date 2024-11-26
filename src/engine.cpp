@@ -10,6 +10,9 @@
 #include <string>
 #include <set>
 
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_vulkan.h>
+
 #include "utils/images.h"
 #include "utils/compatibility.h"
 #include "utils/shaders.h"
@@ -21,16 +24,19 @@ namespace pt
     {
         initWindow();
         initVulkan();
+        initImgui();
     }
+
 
     void Engine::initWindow()
     {
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
         window_ = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan Path Tracing Engine", nullptr, nullptr);
+        glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     }
+
 
     void Engine::initVulkan()
     {
@@ -78,15 +84,8 @@ namespace pt
             createInfo.enabledLayerCount = 0;
         }
 
-        if (vkCreateInstance(&createInfo, nullptr, &instance_) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create instance !");
-        }
-
-        if (glfwCreateWindowSurface(instance_, window_, nullptr, &surface_) != VK_SUCCESS)
-        {
-            throw std::runtime_error("failed to create window surface!");
-        }
+        VK_CHECK(vkCreateInstance(&createInfo, nullptr, &instance_), "Failed to create instance !");
+        VK_CHECK(glfwCreateWindowSurface(instance_, window_, nullptr, &surface_), "failed to create window surface!");
     }
 
     bool Engine::isDeviceSuitable(VkPhysicalDevice device)
@@ -178,6 +177,11 @@ namespace pt
             .pNext = &sync2Feature,
             .bufferDeviceAddress = VK_TRUE,
         };
+        VkPhysicalDeviceDynamicRenderingFeatures dynRendFeature = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
+            .pNext = &bufferDeviceAddressFeature,
+            .dynamicRendering = VK_TRUE,
+        };
 
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice_);
 
@@ -201,7 +205,7 @@ namespace pt
 
         VkDeviceCreateInfo deviceCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            .pNext = &bufferDeviceAddressFeature,
+            .pNext = &dynRendFeature,
             .queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size()),
             .pQueueCreateInfos = queueCreateInfos.data(),
             .enabledExtensionCount = static_cast<uint32_t>(DEVICE_EXTENSIONS.size()),
@@ -220,10 +224,8 @@ namespace pt
             deviceCreateInfo.enabledLayerCount = 0;
         }
 
-        if (vkCreateDevice(physicalDevice_, &deviceCreateInfo, nullptr, &device_) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create logical device!");
-        }
+        VK_CHECK(vkCreateDevice(physicalDevice_, &deviceCreateInfo, nullptr, &device_),
+                 "Failed to create logical device!");
 
         vkGetDeviceQueue(device_, indices.graphicsAndComputeFamily.value(), 0, &computeQueue_);
         vkGetDeviceQueue(device_, indices.presentFamily.value(), 0, &presentQueue_);
@@ -233,7 +235,7 @@ namespace pt
     {
         for (const auto& availableFormat : availableFormats)
         {
-            if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB && availableFormat.colorSpace ==
+            if (availableFormat.format == VK_FORMAT_B8G8R8A8_UNORM && availableFormat.colorSpace ==
                 VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             {
                 return availableFormat;
@@ -320,10 +322,7 @@ namespace pt
             createInfo.pQueueFamilyIndices = nullptr;
         }
 
-        if (vkCreateSwapchainKHR(device_, &createInfo, nullptr, &swapchain_) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Could not create swap chain!");
-        }
+        VK_CHECK(vkCreateSwapchainKHR(device_, &createInfo, nullptr, &swapchain_), "Could not create swap chain!");
 
         uint32_t imageCount;
         vkGetSwapchainImagesKHR(device_, swapchain_, &imageCount, nullptr);
@@ -334,9 +333,27 @@ namespace pt
 
         swapchainImages_.resize(FRAME_OVERLAP);
         vkGetSwapchainImagesKHR(device_, swapchain_, &imageCount, swapchainImages_.data());
-
         swapchainFormat_ = surfaceFormat.format;
         swapchainExtent_ = swapExtent;
+
+        swapchainImageViews_.resize(FRAME_OVERLAP);
+        for (int i = 0; i < swapchainImages_.size(); i++)
+        {
+            VkImageViewCreateInfo imgViewCreateInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = swapchainImages_[i],
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = swapchainFormat_
+            };
+            imgViewCreateInfo.subresourceRange.baseMipLevel = 0;
+            imgViewCreateInfo.subresourceRange.levelCount = 1;
+            imgViewCreateInfo.subresourceRange.baseArrayLayer = 0;
+            imgViewCreateInfo.subresourceRange.layerCount = 1;
+            imgViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+            VK_CHECK(vkCreateImageView(device_, &imgViewCreateInfo, nullptr, &swapchainImageViews_[i]),
+                     "Could not create swap chain image views!");
+        }
     }
 
     void Engine::createVmaAllocator()
@@ -386,11 +403,9 @@ namespace pt
         imgViewCreateInfo.subresourceRange.baseArrayLayer = 0;
         imgViewCreateInfo.subresourceRange.layerCount = 1;
 
+        VK_CHECK(vkCreateImageView(device_, &imgViewCreateInfo, nullptr, &drawImage_.imageView),
+                 "Failed to create intermediate image view!");
 
-        if (vkCreateImageView(device_, &imgViewCreateInfo, nullptr, &drawImage_.imageView) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create intermediate image view!");
-        }
         drawImage_.allocation = imgAllocation;
         drawImage_.imageExtent = {swapchainExtent_.width, swapchainExtent_.height, 1};
         drawImage_.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -427,7 +442,7 @@ namespace pt
 
     void Engine::createComputePipeline()
     {
-        auto compShaderCode = pt_utils::readFile("./shaders/simple.comp.spv");
+        auto compShaderCode = pt_utils::readFile("./shaders/camera_test.comp.spv");
         auto compModule = pt_utils::createShaderModule(device_, compShaderCode);
 
         VkPipelineShaderStageCreateInfo computeShaderStageInfo = {
@@ -443,10 +458,8 @@ namespace pt
             .pSetLayouts = &drawImageLayout_
         };
 
-        if (vkCreatePipelineLayout(device_, &computePipelineLayoutInfo, nullptr, &computePipelineLayout_) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Could not create pipeline layout!");
-        }
+        VK_CHECK(vkCreatePipelineLayout(device_, &computePipelineLayoutInfo, nullptr, &computePipelineLayout_),
+                 "Could not create pipeline layout!");
 
         VkComputePipelineCreateInfo pipelineInfo{
             .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
@@ -454,13 +467,8 @@ namespace pt
             .layout = computePipelineLayout_,
         };
 
-
-        if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline_) !=
-            VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create compute pipeline!");
-        }
-
+        VK_CHECK(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline_),
+                 "Failed to create compute pipeline!");
         vkDestroyShaderModule(device_, compModule, nullptr);
     }
 
@@ -484,10 +492,8 @@ namespace pt
 
         for (int i = 0; i < FRAME_OVERLAP; i++)
         {
-            if (vkCreateCommandPool(device_, &poolInfo, nullptr, &frames_[i].commandPool) != VK_SUCCESS)
-            {
-                throw std::runtime_error("Failed to create command pool!");
-            }
+            VK_CHECK(vkCreateCommandPool(device_, &poolInfo, nullptr, &frames_[i].commandPool),
+                     "Failed to create command pool!");
 
             VkCommandBufferAllocateInfo allocInfo{
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -497,10 +503,9 @@ namespace pt
             };
 
 
-            if (vkAllocateCommandBuffers(device_, &allocInfo, &frames_[i].mainCommandBuffer) != VK_SUCCESS)
-            {
-                throw std::runtime_error("Failed to allocate command buffers!");
-            }
+            VK_CHECK(vkAllocateCommandBuffers(device_, &allocInfo, &frames_[i].mainCommandBuffer),
+                     "Failed to allocate command buffers!");
+
             if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &frames_[i].swapSemaphore) != VK_SUCCESS ||
                 vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &frames_[i].renderSemaphore) != VK_SUCCESS ||
                 vkCreateFence(device_, &fenceInfo, nullptr, &frames_[i].renderFence) != VK_SUCCESS)
@@ -508,17 +513,6 @@ namespace pt
                 throw std::runtime_error("Failed to create semaphores and fence!");
             }
         }
-    }
-
-
-    void Engine::run()
-    {
-        while (!glfwWindowShouldClose(window_))
-        {
-            glfwPollEvents();
-            draw();
-        }
-        vkDeviceWaitIdle(device_);
     }
 
     void Engine::draw()
@@ -564,14 +558,16 @@ namespace pt
         pt_utils::copyImageToImage(cmd, drawImage_.image, swapchainImages_[imageIndex], swapchainExtent_,
                                    swapchainExtent_);
 
-        // Transition to present
+        // Transition to draw gui onto swap chain image
         pt_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                  VK_IMAGE_LAYOUT_GENERAL);
+        drawImgui(cmd, swapchainImageViews_[imageIndex]);
+
+        // Transition to present
+        pt_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_GENERAL,
                                   VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
-        if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Could not record command buffer!");
-        }
+        VK_CHECK(vkEndCommandBuffer(cmd), "Could not record command buffer!");
 
         VkSemaphoreSubmitInfo waitInfo = pt_utils::semaphoreSubmitInfo(
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, getCurrentFrame().swapSemaphore);
@@ -580,7 +576,8 @@ namespace pt
         VkCommandBufferSubmitInfo cmdInfo = pt_utils::commandBufferSubmitInfo(cmd);
         VkSubmitInfo2 submitInfo = pt_utils::submitInfo(&cmdInfo, &signalInfo, &waitInfo);
 
-        vkQueueSubmit2(computeQueue_, 1, &submitInfo, getCurrentFrame().renderFence);
+        VK_CHECK(vkQueueSubmit2(computeQueue_, 1, &submitInfo, getCurrentFrame().renderFence),
+                 "Could not submit queue!");
 
         VkPresentInfoKHR presentInfo = {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -591,16 +588,103 @@ namespace pt
             .pImageIndices = &imageIndex,
         };
 
-        if (vkQueuePresentKHR(presentQueue_, &presentInfo) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Could not present");
-        }
+        VK_CHECK(vkQueuePresentKHR(presentQueue_, &presentInfo), "Could not present");
         frameNumber_++;
+    }
+
+
+    void Engine::initImgui()
+    {
+        // Create a pool for imgui
+        VkDescriptorPoolSize poolSizes[] = {
+            {VK_DESCRIPTOR_TYPE_SAMPLER, 1000},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000},
+            {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000},
+            {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000},
+            {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000}
+        };
+        VkDescriptorPoolCreateInfo poolInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+            .maxSets = 1000,
+            .poolSizeCount = static_cast<uint32_t>(std::size(poolSizes)),
+            .pPoolSizes = poolSizes,
+        };
+
+        VkDescriptorPool imguiPool;
+        VK_CHECK(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &imguiPool), "Failed to create ImGui pool!");
+
+        // Intialize the library
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        io = &ImGui::GetIO();
+        io->ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+        ImGui::StyleColorsDark();
+
+        ImGui_ImplGlfw_InitForVulkan(window_, true);
+        ImGui_ImplVulkan_InitInfo imguiVulkInitInfo = {
+            .Instance = instance_,
+            .PhysicalDevice = physicalDevice_,
+            .Device = device_,
+            .Queue = computeQueue_,
+            .DescriptorPool = imguiPool,
+            .MinImageCount = 3,
+            .ImageCount = 3,
+            .MSAASamples = VK_SAMPLE_COUNT_1_BIT,
+            .UseDynamicRendering = true
+        };
+        imguiVulkInitInfo.PipelineRenderingCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            .colorAttachmentCount = 1,
+            .pColorAttachmentFormats = &swapchainFormat_
+        };
+        ImGui_ImplVulkan_Init(&imguiVulkInitInfo);
+        ImGui_ImplVulkan_CreateFontsTexture();
+    }
+
+    void Engine::drawImgui(VkCommandBuffer cmd, VkImageView targetImageView)
+    {
+        VkRenderingAttachmentInfo colorAttachment = pt_utils::attachmentInfo(
+            targetImageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        VkRenderingInfo renderInfo = pt_utils::renderingInfo(swapchainExtent_, &colorAttachment, nullptr);
+
+        vkCmdBeginRendering(cmd, &renderInfo);
+
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+
+        vkCmdEndRendering(cmd);
+    }
+
+
+    void Engine::run()
+    {
+        while (!glfwWindowShouldClose(window_))
+        {
+            glfwPollEvents();
+
+            ImGui_ImplVulkan_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+            ImGui::ShowDemoWindow();
+            ImGui::Render();
+
+            draw();
+        }
+        vkDeviceWaitIdle(device_);
     }
 
 
     void Engine::cleanup()
     {
+        ImGui_ImplVulkan_Shutdown();
+        // vkDestroyDescriptorPool(device_, imguiPool, nullptr);
         for (auto frame : frames_)
         {
             vkFreeCommandBuffers(device_, frame.commandPool, 1, &frame.mainCommandBuffer);
@@ -616,6 +700,10 @@ namespace pt
         vkDestroyDescriptorSetLayout(device_, drawImageLayout_, nullptr);
         vkDestroyImageView(device_, drawImage_.imageView, nullptr);
         vmaDestroyImage(allocator_, drawImage_.image, drawImage_.allocation);
+        for (auto imageView : swapchainImageViews_)
+        {
+            vkDestroyImageView(device_, imageView, nullptr);
+        }
         vkDestroySwapchainKHR(device_, swapchain_, nullptr);
         vmaDestroyAllocator(allocator_);
         vkDestroyDevice(device_, nullptr);

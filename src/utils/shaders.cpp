@@ -1,5 +1,7 @@
 #include "shaders.h"
 
+#include <fstream>
+
 namespace pt_utils
 {
     std::vector<char> readFile(const std::string& filename) {
@@ -25,10 +27,7 @@ namespace pt_utils
         createInfo.codeSize = code.size();
         createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
 
-        if(vkCreateShaderModule(device, &createInfo, nullptr, &module) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Could not create shader module!");
-        }
+        VK_CHECK(vkCreateShaderModule(device, &createInfo, nullptr, &module), "Could not create shader module!");
 
         return module;
     }

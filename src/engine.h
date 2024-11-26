@@ -3,6 +3,7 @@
 #include "constants.h"
 
 #include <GLFW/glfw3.h>
+#include <imgui.h>
 #include <vector>
 #include <cstdint>
 
@@ -19,6 +20,7 @@ public:
 private:
     void initWindow();
     void initVulkan();
+    void initImgui();
     void createInstance();
     bool isDeviceSuitable(VkPhysicalDevice device);
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
@@ -33,9 +35,11 @@ private:
     void createDescriptors();
     void createComputePipeline();
     void createFrameData();
+    void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);
     void draw();
 
     GLFWwindow* window_ = nullptr;
+    ImGuiIO* io = nullptr;
     uint32_t frameNumber_ = 0;
 
     VkInstance instance_ = VK_NULL_HANDLE;
@@ -50,6 +54,7 @@ private:
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     std::vector<VkImage> swapchainImages_;
+    std::vector<VkImageView> swapchainImageViews_;
     VkFormat swapchainFormat_ = VK_FORMAT_UNDEFINED;
     VkExtent2D swapchainExtent_ = {0, 0};
 

@@ -1,5 +1,4 @@
 #include "compatibility.h"
-#include "constants.h"
 
 #include <string>
 #include <set>

@@ -32,7 +32,8 @@ target_include_directories(${PROJECT_NAME}
 
 add_subdirectory(${LIBS_DIR}/glfw-3.4)
 add_subdirectory(${LIBS_DIR}/vma)
-target_link_libraries(${PROJECT_NAME} PRIVATE glfw ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator)
+add_subdirectory( ${LIBS_DIR}/imgui)
+target_link_libraries(${PROJECT_NAME} PRIVATE glfw ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator imgui)
 
 file(COPY shaders DESTINATION ${CMAKE_BINARY_DIR})
 
