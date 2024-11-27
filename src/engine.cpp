@@ -22,11 +22,14 @@ namespace pt
 {
     void Engine::init()
     {
+        // Controls init
+        keysArePressed = new bool[512]{false};
+        camera_.position = glm::vec3(0.0, 0.0, 3.0);
+
         initWindow();
         initVulkan();
         initImgui();
     }
-
 
     void Engine::initWindow()
     {
@@ -34,7 +37,101 @@ namespace pt
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
         window_ = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan Path Tracing Engine", nullptr, nullptr);
+
+        glfwSetWindowUserPointer(window_, this);
         glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        auto keyCallback = [](GLFWwindow* window, int key, int scancode, int action, int mods)
+        {
+            auto* engine = static_cast<Engine*>(glfwGetWindowUserPointer(window));
+            engine->keyCallback(window, key);
+        };
+        auto mouseCallback = [](GLFWwindow* window, double xpos, double ypos)
+        {
+            auto* engine = static_cast<Engine*>(glfwGetWindowUserPointer(window));
+            engine->mouseCallback(window, static_cast<float>(xpos), static_cast<float>(ypos));
+        };
+        auto mouseButtonCallback = [](GLFWwindow* window, int button, int action, int mods)
+        {
+            auto* engine = static_cast<Engine*>(glfwGetWindowUserPointer(window));
+            engine->mouseButtonCallback(window, button, action);
+        };
+        glfwSetCursorPosCallback(window_, mouseCallback);
+        glfwSetKeyCallback(window_, keyCallback);
+        glfwSetMouseButtonCallback(window_, mouseButtonCallback);
+    }
+
+    void Engine::keyCallback(GLFWwindow* window, int key)
+    {
+        keysArePressed[key] = (glfwGetKey(window, key) == GLFW_PRESS);
+    }
+
+    void Engine::keyInput()
+    {
+        float deltaTime = io->DeltaTime;
+
+        if (keysArePressed['W'] && focused)
+        {
+            camera_.moveForward(deltaTime);
+        }
+        if (keysArePressed['S'] && focused)
+        {
+            camera_.moveBackward(deltaTime);
+        }
+        if (keysArePressed['A'] && focused)
+        {
+            camera_.moveLeft(deltaTime);
+        }
+        if (keysArePressed['D'] && focused)
+        {
+            camera_.moveRight(deltaTime);
+        }
+        if (keysArePressed['Q'] && focused)
+        {
+            camera_.moveDown(deltaTime);
+        }
+        if (keysArePressed[' '] && focused)
+        {
+            camera_.moveUp(deltaTime);
+        }
+    }
+
+
+
+    void Engine::mouseCallback(GLFWwindow* window, float xpos, float ypos)
+    {
+        if (!focused)
+            return;
+
+        // the mouse was not focused the frame before
+        if (isFirstMouseMove)
+        {
+            lastMousePosition.x = xpos;
+            lastMousePosition.y = ypos;
+            isFirstMouseMove = false;
+        }
+        float xOffset = xpos - lastMousePosition.x;
+        float yOffset = lastMousePosition.y - ypos;
+
+        lastMousePosition.x = xpos;
+        lastMousePosition.y = ypos;
+
+        camera_.updateCamDirection(xOffset, yOffset);
+    }
+
+
+    void Engine::mouseButtonCallback(GLFWwindow* window, int button, int action)
+    {
+        if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS)
+        {
+            focused = true;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        }
+        if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_RELEASE)
+        {
+            focused = false;
+            isFirstMouseMove = true;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        }
     }
 
 
@@ -46,9 +143,11 @@ namespace pt
         createSwapchain();
         createVmaAllocator();
         createDrawImage();
+        createGlobalBuffers();
         createDescriptors();
         createComputePipeline();
-        createFrameData();
+        createCommands();
+        createSyncs();
     }
 
     void Engine::createInstance()
@@ -411,15 +510,26 @@ namespace pt
         drawImage_.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     }
 
+    void Engine::createGlobalBuffers()
+    {
+        cameraBuffer_ = createBuffer(
+            sizeof(CameraUniform),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VMA_MEMORY_USAGE_CPU_TO_GPU
+        );
+    }
+
     void Engine::createDescriptors()
     {
         pt_utils::DescriptorLayoutBuilder builder;
         builder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        builder.addBinding(1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         drawImageLayout_ = builder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT);
 
         std::vector<pt_utils::DescriptorAllocator::PoolSizeRatio> sizes =
         {
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
         };
         globalDescriptorAllocator.initPool(device_, 10, sizes);
         drawImageDescriptors_ = globalDescriptorAllocator.allocate(device_, drawImageLayout_);
@@ -436,8 +546,22 @@ namespace pt
             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             .pImageInfo = &imgInfo,
         };
+        VkDescriptorBufferInfo camBufferInfo = {
+            .buffer = cameraBuffer_.buffer,
+            .offset = 0,
+            .range = cameraBuffer_.allocation->GetSize()
+        };
+        VkWriteDescriptorSet camBufferWrite = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = drawImageDescriptors_,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .pBufferInfo = &camBufferInfo,
+        };
+        VkWriteDescriptorSet setsWrite[2] = {drawImageWrite, camBufferWrite};
 
-        vkUpdateDescriptorSets(device_, 1, &drawImageWrite, 0, nullptr);
+        vkUpdateDescriptorSets(device_, 2, &setsWrite[0], 0, nullptr);
     }
 
     void Engine::createComputePipeline()
@@ -472,7 +596,7 @@ namespace pt
         vkDestroyShaderModule(device_, compModule, nullptr);
     }
 
-    void Engine::createFrameData()
+    void Engine::createCommands()
     {
         QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice_);
 
@@ -481,6 +605,41 @@ namespace pt
             .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
             .queueFamilyIndex = queueFamilyIndices.graphicsAndComputeFamily.value(),
         };
+
+        // Frame command pools and buffers
+        for (int i = 0; i < FRAME_OVERLAP; i++)
+        {
+            VK_CHECK(vkCreateCommandPool(device_, &poolInfo, nullptr, &frames_[i].commandPool),
+                     "Failed to create frame command pool!");
+
+            VkCommandBufferAllocateInfo allocInfo = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = frames_[i].commandPool,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 1,
+            };
+
+            VK_CHECK(vkAllocateCommandBuffers(device_, &allocInfo, &frames_[i].mainCommandBuffer),
+                     "Failed to allocate frame command buffer!");
+        }
+
+        // Immediate command pool and buffer
+        VK_CHECK(vkCreateCommandPool(device_, &poolInfo, nullptr, &immediateHandles.commandPool),
+                     "Failed to create immediate command pool!");
+
+        VkCommandBufferAllocateInfo allocInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = immediateHandles.commandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+
+        VK_CHECK(vkAllocateCommandBuffers(device_, &allocInfo, &immediateHandles.commandBuffer),
+                 "Failed to allocate immediate command buffer!");
+    }
+
+    void Engine::createSyncs()
+    {
         VkSemaphoreCreateInfo semaphoreInfo = {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
         };
@@ -489,23 +648,8 @@ namespace pt
             .flags = VK_FENCE_CREATE_SIGNALED_BIT
         };
 
-
         for (int i = 0; i < FRAME_OVERLAP; i++)
         {
-            VK_CHECK(vkCreateCommandPool(device_, &poolInfo, nullptr, &frames_[i].commandPool),
-                     "Failed to create command pool!");
-
-            VkCommandBufferAllocateInfo allocInfo{
-                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                .commandPool = frames_[i].commandPool,
-                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                .commandBufferCount = 1,
-            };
-
-
-            VK_CHECK(vkAllocateCommandBuffers(device_, &allocInfo, &frames_[i].mainCommandBuffer),
-                     "Failed to allocate command buffers!");
-
             if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &frames_[i].swapSemaphore) != VK_SUCCESS ||
                 vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &frames_[i].renderSemaphore) != VK_SUCCESS ||
                 vkCreateFence(device_, &fenceInfo, nullptr, &frames_[i].renderFence) != VK_SUCCESS)
@@ -513,7 +657,73 @@ namespace pt
                 throw std::runtime_error("Failed to create semaphores and fence!");
             }
         }
+        VK_CHECK(vkCreateFence(device_, &fenceInfo, nullptr, &immediateHandles.fence), "Could not create immedaite fence!");
     }
+
+    void Engine::immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function)
+    {
+        VK_CHECK(vkResetFences(device_, 1, &immediateHandles.fence), "");
+        VK_CHECK(vkResetCommandBuffer(immediateHandles.commandBuffer, 0), "");
+
+        VkCommandBuffer cmd = immediateHandles.commandBuffer;
+
+        VkCommandBufferBeginInfo cmdBeginInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+
+        VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo), "");
+        function(cmd);
+        VK_CHECK(vkEndCommandBuffer(cmd), "");
+
+        VkCommandBufferSubmitInfo cmdinfo = pt_utils::commandBufferSubmitInfo(cmd);
+        VkSubmitInfo2 submit = pt_utils::submitInfo(&cmdinfo, nullptr, nullptr);
+
+        // submit command buffer to the queue and execute it.
+        // the fence will now block until the graphic commands finish execution
+        VK_CHECK(vkQueueSubmit2(computeQueue_, 1, &submit, immediateHandles.fence), "");
+        VK_CHECK(vkWaitForFences(device_, 1, &immediateHandles.fence, true, 9999999999), "");
+    }
+
+
+    AllocatedBuffer Engine::createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage)
+    {
+        VkBufferCreateInfo bufferInfo = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = allocSize,
+            .usage = usage,
+        };
+
+        VmaAllocationCreateInfo vmaallocInfo = {
+            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            .usage = memoryUsage,
+        };
+
+        AllocatedBuffer newBuffer;
+        VK_CHECK(vmaCreateBuffer(allocator_, &bufferInfo, &vmaallocInfo, &newBuffer.buffer, &newBuffer.allocation,
+                     &newBuffer.info), "Could not create buffer!");
+
+        return newBuffer;
+    }
+
+
+    void Engine::destroyBuffer(const AllocatedBuffer& buffer)
+    {
+        vmaDestroyBuffer(allocator_, buffer.buffer, buffer.allocation);
+    }
+
+
+    void Engine::updateGlobalBuffers()
+    {
+        void* data = cameraBuffer_.allocation->GetMappedData();
+        CameraUniform cam = {
+            .position = camera_.position,
+            .invView = glm::inverse(camera_.viewMatrix),
+            .invProj = glm::inverse(camera_.projMatrix)
+        };
+        memcpy(data, &cam, sizeof(CameraUniform));
+    }
+
 
     void Engine::draw()
     {
@@ -667,13 +877,17 @@ namespace pt
     {
         while (!glfwWindowShouldClose(window_))
         {
+            keyInput();
             glfwPollEvents();
+            camera_.updateMatrix();
 
             ImGui_ImplVulkan_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
             ImGui::ShowDemoWindow();
             ImGui::Render();
+
+            updateGlobalBuffers();
 
             draw();
         }
@@ -685,6 +899,10 @@ namespace pt
     {
         ImGui_ImplVulkan_Shutdown();
         // vkDestroyDescriptorPool(device_, imguiPool, nullptr);
+        destroyBuffer(cameraBuffer_);
+        vkFreeCommandBuffers(device_, immediateHandles.commandPool, 1, &immediateHandles.commandBuffer);
+        vkDestroyCommandPool(device_, immediateHandles.commandPool, nullptr);
+        vkDestroyFence(device_, immediateHandles.fence, nullptr);
         for (auto frame : frames_)
         {
             vkFreeCommandBuffers(device_, frame.commandPool, 1, &frame.mainCommandBuffer);

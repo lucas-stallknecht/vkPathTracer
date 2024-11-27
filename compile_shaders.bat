@@ -10,7 +10,7 @@ if not exist "%COMPILED_SHADER_BUILD_DIR%" (
 )
 
 for %%f in (%SHADER_DIR%\*.comp) do (
-    set "OUTPUT_FILE=%COMPILED_SHADER_BUILD_DIR%\%%~nxf.spv"
+    set OUTPUT_FILE="%COMPILED_SHADER_BUILD_DIR%\%%~nxf.spv"
     echo Compiling %%f to !OUTPUT_FILE!
     %GLSLC% %%f -o !OUTPUT_FILE!
 )

@@ -1,4 +1,6 @@
 #pragma once
+#include <Camera.h>
+
 #include "types.h"
 #include "constants.h"
 
@@ -6,6 +8,8 @@
 #include <imgui.h>
 #include <vector>
 #include <cstdint>
+#include <functional>
+
 
 #include "utils/descriptors.h"
 
@@ -32,14 +36,31 @@ private:
     void createSwapchain();
     void createVmaAllocator();
     void createDrawImage();
+    void createGlobalBuffers();
     void createDescriptors();
     void createComputePipeline();
-    void createFrameData();
+    void createCommands();
+    void createSyncs();
+    void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
+    AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
+    void destroyBuffer(const AllocatedBuffer& buffer);
+    void updateGlobalBuffers();
     void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);
     void draw();
 
+    void keyCallback(GLFWwindow* window, int key);
+    void mouseCallback(GLFWwindow* window, float xpos, float ypos);
+    void mouseButtonCallback(GLFWwindow* window, int button, int action);
+    void keyInput();
+
     GLFWwindow* window_ = nullptr;
     ImGuiIO* io = nullptr;
+    Camera camera_ = {50.0f, static_cast<float>(WIDTH) / static_cast<float>(HEIGHT)};
+    bool focused = false;
+    bool* keysArePressed = nullptr;
+    bool isFirstMouseMove = true;
+    glm::vec2 lastMousePosition = glm::vec2();
+
     uint32_t frameNumber_ = 0;
 
     VkInstance instance_ = VK_NULL_HANDLE;
@@ -65,6 +86,9 @@ private:
     VkPipeline computePipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout computePipelineLayout_ = VK_NULL_HANDLE;
 
+    AllocatedBuffer cameraBuffer_{};
+
+    ImmediateHandles immediateHandles{};
     FrameData frames_[FRAME_OVERLAP];
     FrameData& getCurrentFrame() { return frames_[frameNumber_ % FRAME_OVERLAP]; }
 };
