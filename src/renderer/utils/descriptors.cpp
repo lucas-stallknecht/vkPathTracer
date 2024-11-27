@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-namespace pt_utils
+namespace renderer_utils
 {
     void DescriptorLayoutBuilder::addBinding(uint32_t binding, VkDescriptorType type)
     {
@@ -37,7 +37,8 @@ namespace pt_utils
 
 
         VkDescriptorSetLayout setLayout;
-        VK_CHECK(vkCreateDescriptorSetLayout(device, &info, nullptr, &setLayout), "Could not create descriptor set layout!");
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &info, nullptr, &setLayout),
+                 "Could not create descriptor set layout!");
 
         return setLayout;
     }
@@ -46,7 +47,8 @@ namespace pt_utils
     void DescriptorAllocator::initPool(VkDevice device, uint32_t maxSets, std::span<PoolSizeRatio> poolRatios)
     {
         std::vector<VkDescriptorPoolSize> poolSizes;
-        for (PoolSizeRatio ratio : poolRatios) {
+        for (PoolSizeRatio ratio : poolRatios)
+        {
             poolSizes.push_back(VkDescriptorPoolSize{
                 .type = ratio.type,
                 .descriptorCount = static_cast<uint32_t>(ratio.ratio * maxSets)
@@ -62,7 +64,6 @@ namespace pt_utils
         };
 
         VK_CHECK(vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool), "Could not create descriptor pool!");
-
     }
 
     void DescriptorAllocator::clearDescriptors(VkDevice device)
@@ -72,7 +73,7 @@ namespace pt_utils
 
     void DescriptorAllocator::destroyPool(VkDevice device)
     {
-        vkDestroyDescriptorPool(device,pool,nullptr);
+        vkDestroyDescriptorPool(device, pool, nullptr);
     }
 
     VkDescriptorSet DescriptorAllocator::allocate(VkDevice device, VkDescriptorSetLayout layout)
@@ -86,7 +87,7 @@ namespace pt_utils
 
 
         VkDescriptorSet ds;
-       VK_CHECK(vkAllocateDescriptorSets(device, &allocInfo, &ds), "Could not allocate descriptor set!");
+        VK_CHECK(vkAllocateDescriptorSets(device, &allocInfo, &ds), "Could not allocate descriptor set!");
 
         return ds;
     }

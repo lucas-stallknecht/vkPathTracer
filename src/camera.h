@@ -2,7 +2,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-namespace pt
+namespace engine
 {
     class Camera
     {
@@ -10,7 +10,7 @@ namespace pt
         static constexpr float CAM_VIEW_SPEED = 0.0007f;
 
     public:
-        Camera(float fov, float aspect, float near = 0.1, float far = 100.0);
+        Camera(float fov, float aspect, float nearPlane = 0.1f, float farPlane = 100.0f);
         void updateMatrix();
         void moveForward(float deltaTime);
         void moveBackward(float deltaTime);
@@ -26,7 +26,7 @@ namespace pt
         glm::vec3 direction = {0.0, 0.0, -1.0};
         float fov;
         float aspect;
-        float near;
-        float far;
+        float nearPlane;
+        float farPlane;
     };
 } // grass

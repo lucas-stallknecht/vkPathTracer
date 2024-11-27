@@ -2,12 +2,14 @@
 
 #include <fstream>
 
-namespace pt_utils
+namespace renderer_utils
 {
-    std::vector<char> readFile(const std::string& filename) {
+    std::vector<char> readFile(const std::string& filename)
+    {
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
-        if (!file.is_open()) {
+        if (!file.is_open())
+        {
             throw std::runtime_error("Failed to open file!");
         }
 
@@ -20,7 +22,8 @@ namespace pt_utils
         return buffer;
     }
 
-    VkShaderModule createShaderModule(VkDevice device, const std::vector<char>& code) {
+    VkShaderModule createShaderModule(VkDevice device, const std::vector<char>& code)
+    {
         VkShaderModule module;
         VkShaderModuleCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;

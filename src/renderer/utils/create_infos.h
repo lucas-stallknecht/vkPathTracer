@@ -1,7 +1,7 @@
 #pragma once
 #include "types.h"
 
-namespace pt_utils
+namespace renderer_utils
 {
     VkSemaphoreSubmitInfo semaphoreSubmitInfo(VkPipelineStageFlags2 stageMask, VkSemaphore semaphore);
     VkCommandBufferSubmitInfo commandBufferSubmitInfo(VkCommandBuffer cmd);

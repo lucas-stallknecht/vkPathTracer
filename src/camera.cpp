@@ -3,17 +3,18 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 
-namespace pt
+namespace engine
 {
-    Camera::Camera(float fov, float aspect, float near, float far) : fov(fov), aspect(aspect), near(near),
-                                                                     far(far)
+    Camera::Camera(float fov, float aspect, float nearPlane, float farPlane) : fov(fov), aspect(aspect),
+                                                                               nearPlane(nearPlane),
+                                                                               farPlane(farPlane)
     {
         updateMatrix();
     }
 
     void Camera::updateMatrix()
     {
-        projMatrix = glm::perspective(glm::radians(fov), aspect, near, far);
+        projMatrix = glm::perspective(glm::radians(fov), aspect, nearPlane, farPlane);
         viewMatrix = glm::lookAt(position, position + direction, glm::vec3{0.0, 1.0, 0.0});
     }
 
@@ -39,12 +40,12 @@ namespace pt
 
     void Camera::moveUp(float deltaTime)
     {
-        position += glm::vec3(0.0f, 1.0f, 0.0f) * CAM_MOV_SPEED * deltaTime * 0.25f;
+        position += glm::vec3(0.0f, 1.0f, 0.0f) * CAM_MOV_SPEED * deltaTime * 0.5f;
     }
 
     void Camera::moveDown(float deltaTime)
     {
-        position -= glm::vec3(0.0f, -1.0f, 0.0f) * CAM_MOV_SPEED * deltaTime * 0.25f;
+        position -= glm::vec3(0.0f, 1.0f, 0.0f) * CAM_MOV_SPEED * deltaTime * 0.55f;
     }
 
     void Camera::updateCamDirection(float deltax, float deltay)

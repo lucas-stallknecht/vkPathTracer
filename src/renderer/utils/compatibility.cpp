@@ -5,9 +5,8 @@
 #include <cstdint>
 #include <fstream>
 
-namespace pt_utils
+namespace renderer_utils
 {
-
     bool checkValidationLayerSupport()
     {
         uint32_t layerCount;
@@ -79,5 +78,4 @@ namespace pt_utils
         }
         return details;
     }
-
 }

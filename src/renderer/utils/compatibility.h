@@ -4,7 +4,7 @@
 
 #include <vector>
 
-namespace pt_utils
+namespace renderer_utils
 {
     struct SwapchainSupportDetails
     {
@@ -17,4 +17,3 @@ namespace pt_utils
     bool checkDeviceExtensionSupport(VkPhysicalDevice device);
     SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
 }
-

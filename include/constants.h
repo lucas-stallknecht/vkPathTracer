@@ -1,5 +1,4 @@
 #pragma once
-
 #include "types.h"
 #include <cstdint>
 #include <vector>
@@ -8,10 +7,8 @@
 #include <vulkan/vk_enum_string_helper.h>
 
 
-#ifdef NDEBUG
-    constexpr bool ENABLE_VALIDATION_LAYERS = false;
-#else
-constexpr bool ENABLE_VALIDATION_LAYERS = true;
+#ifndef NDEBUG
+    #define ENABLE_VALIDATION_LAYERS
 #endif
 
 constexpr uint32_t WIDTH = 800;

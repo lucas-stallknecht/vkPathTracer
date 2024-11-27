@@ -4,7 +4,7 @@
 #include <vector>
 #include <span>
 
-namespace pt_utils
+namespace renderer_utils
 {
     struct DescriptorLayoutBuilder
     {
@@ -16,9 +16,10 @@ namespace pt_utils
                                     VkDescriptorSetLayoutCreateFlags flags = 0);
     };
 
-    struct DescriptorAllocator {
-
-        struct PoolSizeRatio{
+    struct DescriptorAllocator
+    {
+        struct PoolSizeRatio
+        {
             VkDescriptorType type;
             float ratio;
         };

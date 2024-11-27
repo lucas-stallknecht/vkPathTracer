@@ -1,19 +1,29 @@
 #pragma once
 #include <vma/vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
+// double ended queue
+#include <deque>
+#include <functional>
 #include <optional>
 #include <glm/glm.hpp>
 
-namespace pt
+namespace renderer
 {
-    struct QueueFamilyIndices
+    struct DeletionQueue
     {
-        std::optional<uint32_t> graphicsAndComputeFamily;
-        std::optional<uint32_t> presentFamily;
+        std::deque<std::function<void()>> deletors;
 
-        bool isComplete()
-        {
-            return graphicsAndComputeFamily.has_value() && presentFamily.has_value();
+        void push_function(std::function<void()>&& function) {
+            deletors.push_back(function);
+        }
+
+        void flush() {
+            // reverse iterate the deletion queue to execute all the functions
+            for (auto it = deletors.rbegin(); it != deletors.rend(); it++) {
+                (*it)(); //call the function
+            }
+
+            deletors.clear();
         }
     };
 
@@ -24,6 +34,7 @@ namespace pt
         VkFence renderFence = VK_NULL_HANDLE;
         VkSemaphore swapSemaphore = VK_NULL_HANDLE;
         VkSemaphore renderSemaphore = VK_NULL_HANDLE;
+        DeletionQueue deletionQueue;
     };
 
     struct ImmediateHandles

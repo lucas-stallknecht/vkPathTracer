@@ -1,6 +1,6 @@
 #include "images.h"
 
-namespace pt_utils
+namespace renderer_utils
 {
     VkImageSubresourceRange getImageSubresourceRange(VkImageAspectFlags aspectMask)
     {
@@ -79,4 +79,4 @@ namespace pt_utils
         };
         vkCmdBlitImage2(cmd, &blitInfo);
     }
-} // pt_utils
+} // renderer_utils
