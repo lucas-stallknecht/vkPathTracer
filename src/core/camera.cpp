@@ -3,7 +3,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 
-namespace engine
+namespace core
 {
     Camera::Camera(float fov, float aspect, float nearPlane, float farPlane) : fov(fov), aspect(aspect),
                                                                                nearPlane(nearPlane),

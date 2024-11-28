@@ -7,6 +7,50 @@
 #include <optional>
 #include <glm/glm.hpp>
 
+namespace core
+{
+    struct Vertex {
+        glm::vec3 position;
+        float uv1;
+        glm::vec3 normal;
+        float uv2;
+    }; // 32 bytes
+
+    struct TraceTriangle
+    {
+        uint32_t v0;
+        uint32_t v1;
+        uint32_t v2;
+        float padding1;
+        glm::vec3 centroid;
+        float padding2;
+    }; // 32 bytes
+
+    struct TraceMaterial
+    {
+        glm::vec3 diffuseCol;
+        float emissiveStrength;
+        float roughness;
+        float metallic;
+        glm::vec2 padding;
+    }; // 32 bytes
+
+    struct TraceBVHNode {
+        glm::vec3 aabbMin;
+        uint32_t triangleCount;
+        glm::vec3 aabbMax;
+        uint32_t index; // triangleIndex if leaf node, otherwise childIndex
+    }; // 32 bytes
+
+    struct TraceMesh
+    {
+        std::vector<Vertex> vertices;
+        std::vector<TraceTriangle> triangles;
+        TraceMaterial material;
+        std::vector<TraceBVHNode> nodes;
+    };
+}
+
 namespace renderer
 {
     struct DeletionQueue
@@ -66,3 +110,5 @@ namespace renderer
         glm::mat4 invProj;
     };
 }
+
+

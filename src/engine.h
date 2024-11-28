@@ -3,8 +3,9 @@
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+#include <array>
 
-#include "camera.h"
+#include "core/camera.h"
 #include "renderer/renderer.h"
 
 namespace engine
@@ -26,12 +27,12 @@ namespace engine
 
         GLFWwindow* window_ = nullptr;
         ImGuiIO* io = nullptr;
-        Camera camera_ = {40.0f, static_cast<float>(WIDTH) / static_cast<float>(HEIGHT)};
+        core::Camera camera_ = {40.0f, static_cast<float>(WIDTH) / static_cast<float>(HEIGHT)};
         renderer::Renderer renderer_{};
 
         // Controls
         bool focused_ = false;
-        bool* keysArePressed_ = nullptr;
+        std::array<bool, 512> keysArePressed_{};
         bool isFirstMouseMove_ = true;
         glm::vec2 lastMousePosition_ = glm::vec2();
     };

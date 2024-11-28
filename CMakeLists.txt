@@ -27,6 +27,7 @@ target_include_directories(${PROJECT_NAME}
         PUBLIC ${PROJECT_ROOT_DIR}/include
         PRIVATE ${SOURCE_DIR}
         ${LIBS_DIR}/glfw-3.4.bin.WIN64/include
+        ${LIBS_DIR}/tinyobjloader
         ${Vulkan_INCLUDE_DIRS}
 )
 

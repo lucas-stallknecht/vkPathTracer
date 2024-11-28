@@ -1,17 +1,23 @@
 #include "engine.h"
 
-#include <functional>
+#include <core/utils/trace_mesh.h>
 
 namespace engine
 {
     void Engine::init()
     {
-        // Controls init
-        keysArePressed_ = new bool[512]{false};
         camera_.position = glm::vec3(0.0, 0.0, 3.0);
         initWindow();
         initImGui();
         renderer_.init(window_);
+
+        // Trying the traceable mesh builder
+        core_utils::TraceMeshBuilder builder;
+        builder.setGeometry("./assets/models/grenade.obj");
+        builder.setMaterial(glm::vec3(0.0, 0.0, 0.0), 0.0, 0.5, 0.0);
+        core::TraceMesh mesh = builder.build();
+        builder.traverseBVH(0);
+
     }
 
     void Engine::initWindow()

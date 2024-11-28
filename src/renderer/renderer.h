@@ -8,7 +8,7 @@
 #include <functional>
 
 #include "utils/descriptors.h"
-#include "camera.h"
+#include "core/camera.h"
 
 namespace renderer
 {
@@ -17,7 +17,7 @@ namespace renderer
     public:
         void init(GLFWwindow* window);
         void newImGuiFrame();
-        void render(const engine::Camera& camera);
+        void render(const core::Camera& camera);
         void cleanup();
 
     private:
@@ -41,7 +41,7 @@ namespace renderer
         void createSyncs();
         AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
         void destroyBuffer(const AllocatedBuffer& buffer);
-        void updateGlobalBuffers(const engine::Camera& camera) const;
+        void updateGlobalBuffers(const core::Camera& camera) const;
         void draw();
         void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);
         void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);

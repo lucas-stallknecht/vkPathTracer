@@ -660,13 +660,13 @@ namespace renderer
     }
 
 
-    void Renderer::render(const engine::Camera& camera)
+    void Renderer::render(const core::Camera& camera)
     {
         updateGlobalBuffers(camera);
         draw();
     }
 
-    void Renderer::updateGlobalBuffers(const engine::Camera& camera) const
+    void Renderer::updateGlobalBuffers(const core::Camera& camera) const
     {
         void* data = cameraBuffer_.allocation->GetMappedData();
         CameraUniform cam = {

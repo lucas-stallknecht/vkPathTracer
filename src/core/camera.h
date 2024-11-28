@@ -2,7 +2,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-namespace engine
+namespace core
 {
     class Camera
     {
@@ -20,8 +20,8 @@ namespace engine
         void moveDown(float deltaTime);
         void updateCamDirection(float xoffset, float yoffset);
 
-        glm::mat4 viewMatrix;
-        glm::mat4 projMatrix;
+        glm::mat4 viewMatrix{};
+        glm::mat4 projMatrix{};
         glm::vec3 position = {0.0, 0.0, 0.0};
         glm::vec3 direction = {0.0, 0.0, -1.0};
         float fov;
