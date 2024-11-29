@@ -1,0 +1,190 @@
+#version 460
+#extension GL_EXT_buffer_reference : require
+
+struct Vertex {
+    vec3 pos;
+    float uv1;
+    vec3 normal;
+    float uv2;
+};
+
+struct Triangle {
+    uint v0;
+    uint v1;
+    uint v2;
+    float pad;
+    vec3 centroid_;
+};
+
+struct Material {
+    vec3 diffuseCol;
+    float emissiveStrength;
+    float roughness;
+    float metallic;
+};
+
+struct Node {
+    vec3 aabbMin;
+    uint triangleCount;
+    vec3 aabbMax;
+    uint index;
+};
+
+struct Ray {
+    vec3 ro;
+    vec3 rd;
+};
+
+struct HitInfo {
+    vec3 pos;
+    float dist;
+    vec3 normal;
+    bool hit;
+    Material material;
+    int triIndex;
+};
+
+struct Camera {
+    vec3 pos;
+    mat4 invView;
+    mat4 invProj;
+};
+
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (set = 0, binding = 0) uniform globalBuffer {
+    Camera cam;
+};
+layout (rgba16f, set = 1, binding = 0) uniform image2D image;
+layout(buffer_reference, std430) readonly buffer VertexBuffer{
+    Vertex vertices[];
+};
+layout(buffer_reference, std430) readonly buffer TriangleBuffer{
+    Triangle triangles[];
+};
+//layout(buffer_reference, std430) readonly buffer MaterialBuffer{
+//    Material materials[];
+//};
+layout(buffer_reference, std430) readonly buffer NodeBuffer{
+    Node nodes[];
+};
+//layout(buffer_reference, std430) readonly buffer MeshInfoBuffer{
+//    MeshInfo meshInfos[];
+//};
+layout( push_constant ) uniform constants
+{
+    uint triangleCount;
+    VertexBuffer vertexBuffer;
+    TriangleBuffer triangleBuffer;
+    NodeBuffer nodeBuffer;
+} PushConstants;
+
+
+const vec3 spherePos = vec3(0.0, 0.0, 0.0);
+const float sphereRad = 0.5;
+
+
+bool raySphereIntersect(Ray ray, vec3 pos, float r) {
+    float a = dot(ray.rd, ray.rd);
+    vec3 s0_r0 = ray.ro - pos;
+    float b = 2.0 * dot(ray.rd, s0_r0);
+    float c = dot(s0_r0, s0_r0) - (r * r);
+
+    if (b * b - 4.0 * a * c < 0.0) {
+        return false;
+    }
+    // distance to sphere
+    float t = (-b - sqrt((b * b) - 4.0 * a * c)) / (2.0 * a);
+
+    return t > 0.0;
+}
+
+HitInfo rayTriangleIntersect(Ray ray, Triangle tri) {
+    HitInfo hi;
+    hi.hit = false;
+    hi.dist = -1.0;
+
+    vec3 v1v0 = PushConstants.vertexBuffer.vertices[tri.v1].pos - PushConstants.vertexBuffer.vertices[tri.v0].pos;
+    vec3 v2v0 = PushConstants.vertexBuffer.vertices[tri.v2].pos - PushConstants.vertexBuffer.vertices[tri.v0].pos;
+    vec3 rov0 = ray.ro - PushConstants.vertexBuffer.vertices[tri.v0].pos;
+    vec3 n = cross(v1v0, v2v0);
+
+    vec3 q = cross(rov0, ray.rd);
+    float d = 1.0 / dot(ray.rd, n);
+    float u = d * dot(-q, v2v0);
+    float v = d * dot(q, v1v0);
+    float t = d * dot(-n, rov0);
+
+    if (u >= 0.0 && v >= 0.0 && (u + v) <= 1.0 && t > 0.0) {
+        hi.hit = true;
+        hi.dist = t;
+        hi.pos = ray.ro + ray.rd * t;
+        if (dot(n, ray.rd) > 0.0) {
+            n = -n;  // Flip the normal if it's not facing the ray origin
+        }
+        hi.normal = normalize(n);
+    }
+
+    return hi;
+}
+
+HitInfo intersects(Ray ray) {
+    HitInfo hi;
+    hi.hit = false;
+
+    Material mat;
+    mat.diffuseCol = vec3(1.0, 0.0, 0.0);
+    mat.emissiveStrength = 0.5;
+    mat.roughness = 1.0;
+    mat.metallic = 0.0;
+    for (int i = 0; i < PushConstants.triangleCount; i++) {
+        HitInfo triangleHi = rayTriangleIntersect(ray, PushConstants.triangleBuffer.triangles[i]);
+        if (triangleHi.hit && (!hi.hit || triangleHi.dist < hi.dist)) {
+            hi = triangleHi;
+            hi.material = mat;
+        }
+    }
+
+    return hi;
+}
+
+vec3 trace(Ray ray, inout uint seed) {
+    vec3 rayCol = vec3(1.);
+    vec3 pixelColor = vec3(0.);
+
+    HitInfo hi = intersects(ray);
+    if (!hi.hit) {
+        return pixelColor;
+    }
+    pixelColor += (hi.material.diffuseCol * hi.material.emissiveStrength) * rayCol;
+    rayCol *= hi.material.diffuseCol;
+
+
+    return pixelColor;
+}
+
+
+void main()
+{
+    ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = 2.0 * (vec2(texelCoord) / (gl_WorkGroupSize.xy * gl_NumWorkGroups.xy)) - 1.0;
+    uv.y *= -1.0;
+
+    Ray ray;
+    ray.ro = cam.pos;
+    // apply the inv projection and view matrices to the classical RT ray direction
+    vec4 target = cam.invProj * vec4(uv.x, uv.y, 1.0, 1.0);
+    vec3 normalizedTarget = normalize(vec3(target) / target.w);
+    ray.rd = vec3(cam.invView * vec4(normalizedTarget, 0.0));
+
+    vec3 outputCol = vec3(0.0);
+    uint seed = uint(uint(texelCoord.x) * uint(1973) + uint(texelCoord.y) * uint(9277) + uint(26699)) | uint(1);
+    ivec2 size = imageSize(image);
+
+    if (texelCoord.x < size.x && texelCoord.y < size.y)
+    {
+        outputCol += trace(ray, seed);
+        imageStore(image, texelCoord, vec4(outputCol, 1.0));
+    }
+}

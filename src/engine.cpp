@@ -15,9 +15,9 @@ namespace engine
         core_utils::TraceMeshBuilder builder;
         builder.setGeometry("./assets/models/grenade.obj");
         builder.setMaterial(glm::vec3(0.0, 0.0, 0.0), 0.0, 0.5, 0.0);
-        core::TraceMesh mesh = builder.build();
+        core::TraceMesh grenade = builder.build();
         builder.traverseBVH(0);
-
+        renderer_.uploadPathTracingScene(grenade);
     }
 
     void Engine::initWindow()

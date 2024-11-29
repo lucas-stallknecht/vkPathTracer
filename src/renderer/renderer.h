@@ -18,6 +18,7 @@ namespace renderer
         void init(GLFWwindow* window);
         void newImGuiFrame();
         void render(const core::Camera& camera);
+        void uploadPathTracingScene(const core::TraceMesh& scene);
         void cleanup();
 
     private:
@@ -34,20 +35,18 @@ namespace renderer
         void createSwapchain(GLFWwindow* window);
         void createVmaAllocator();
         void createDrawImage();
-        void createGlobalBuffers();
-        void createDescriptors();
-        void createComputePipeline();
+        void createGlobalBuffer();
+        void createGlobalDescriptors();
+        void createPathTracingDescriptors();
+        void createPathTracingPipeline();
         void createCommands();
         void createSyncs();
-        AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
-        void destroyBuffer(const AllocatedBuffer& buffer);
-        void updateGlobalBuffers(const core::Camera& camera) const;
+        void updateGlobalBuffer(const core::Camera& camera) const;
         void draw();
         void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);
         void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
 
         uint32_t frameNumber_ = 0;
-
         VkInstance instance_ = VK_NULL_HANDLE;
         VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
         VkDevice device_ = VK_NULL_HANDLE;
@@ -65,15 +64,18 @@ namespace renderer
         VkExtent2D swapchainExtent_ = {0, 0};
 
         AllocatedImage drawImage_{};
-        VkDescriptorSetLayout drawImageLayout_ = VK_NULL_HANDLE;
-        VkDescriptorSet drawImageDescriptors_ = VK_NULL_HANDLE;
+        AllocatedBuffer globalBuffer_{};
+        VkDescriptorSetLayout globalDescLayout_ = VK_NULL_HANDLE;
+        VkDescriptorSet globalDescriptors_ = VK_NULL_HANDLE;
 
-        VkPipeline computePipeline_ = VK_NULL_HANDLE;
-        VkPipelineLayout computePipelineLayout_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout ptDescLayout_ = VK_NULL_HANDLE;
+        VkDescriptorSet ptDescriptors_ = VK_NULL_HANDLE;
+        VkPipeline ptPipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout ptPipelineLayout_ = VK_NULL_HANDLE;
+        TraceSceneBuffers ptScene;
+        TracePushConstants ptPushConstants = {};
 
-        AllocatedBuffer cameraBuffer_{};
-
-        ImmediateHandles immediateHandles{};
+        ImmediateHandles immediateHandles_{};
         DeletionQueue deletionQueue_;
         FrameData frames_[FRAME_OVERLAP];
         FrameData& getCurrentFrame() { return frames_[frameNumber_ % FRAME_OVERLAP]; }
