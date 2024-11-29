@@ -110,35 +110,35 @@ namespace renderer
         glm::mat4 invProj;
     };
 
-    struct TraceBufferInfo
-    {
-        const void* data;
-        size_t size;
-        AllocatedBuffer& dstBuffer;
-        VkDeviceAddress& dstBufferAddress;
-    };
-
     struct TraceSceneBuffers
     {
         AllocatedBuffer vertexBuffer{};
         VkDeviceAddress vertexBufferAddress = 0;
         AllocatedBuffer triangleBuffer{};
         VkDeviceAddress triangleBufferAddress = 0;
-        // AllocatedBuffer materialBuffer{};
-        // VkDeviceAddress materialBufferAddress = 0;
+        AllocatedBuffer materialBuffer{};
+        VkDeviceAddress materialBufferAddress = 0;
         AllocatedBuffer nodeBuffer{};
         VkDeviceAddress nodeBufferAddress = 0;
-        // AllocatedBuffer meshInfoBuffer{};
-        // VkDeviceAddress meshInfoBufferAddress = 0;
+        AllocatedBuffer meshInfoBuffer{};
+        VkDeviceAddress meshInfoBufferAddress = 0;
+    };
+
+    struct TraceMeshInfo
+    {
+        uint32_t vertexOffset = 0;
+        uint32_t triangleOffset = 0;
+        uint32_t nodeOffset = 0;
+        uint32_t materialIndex = 0;
     };
 
     struct TracePushConstants {
-        uint32_t triangleCount;
+        uint32_t meshCount;
         VkDeviceAddress vertexBuffer;
-        // VkDeviceAddress materialBuffer;
         VkDeviceAddress triangleBuffer;
         VkDeviceAddress nodeBuffer;
-        // VkDeviceAddress meshInfoBuffer;
+        VkDeviceAddress materialBuffer;
+        VkDeviceAddress meshInfoBuffer;
     };
 }
 

@@ -1,5 +1,5 @@
 #version 460
-#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference: require
 
 struct Vertex {
     vec3 pos;
@@ -30,6 +30,14 @@ struct Node {
     uint index;
 };
 
+struct MeshInfo {
+    uint vertexOffset;
+    uint triangleOffset;
+    uint nodeOffset;
+    uint materialIndex;
+};
+
+
 struct Ray {
     vec3 ro;
     vec3 rd;
@@ -41,7 +49,6 @@ struct HitInfo {
     vec3 normal;
     bool hit;
     Material material;
-    int triIndex;
 };
 
 struct Camera {
@@ -51,33 +58,36 @@ struct Camera {
 };
 
 
+
 layout (local_size_x = 16, local_size_y = 16) in;
 
 layout (set = 0, binding = 0) uniform globalBuffer {
     Camera cam;
 };
 layout (rgba16f, set = 1, binding = 0) uniform image2D image;
-layout(buffer_reference, std430) readonly buffer VertexBuffer{
+layout (buffer_reference, std430) readonly buffer VertexBuffer {
     Vertex vertices[];
 };
-layout(buffer_reference, std430) readonly buffer TriangleBuffer{
+layout (buffer_reference, std430) readonly buffer TriangleBuffer {
     Triangle triangles[];
 };
-//layout(buffer_reference, std430) readonly buffer MaterialBuffer{
-//    Material materials[];
-//};
-layout(buffer_reference, std430) readonly buffer NodeBuffer{
+layout (buffer_reference, std430) readonly buffer MaterialBuffer {
+    Material materials[];
+};
+layout (buffer_reference, std430) readonly buffer NodeBuffer {
     Node nodes[];
 };
-//layout(buffer_reference, std430) readonly buffer MeshInfoBuffer{
-//    MeshInfo meshInfos[];
-//};
-layout( push_constant ) uniform constants
+layout (buffer_reference, std430) readonly buffer MeshInfoBuffer {
+    MeshInfo meshInfos[];
+};
+layout (push_constant) uniform constants
 {
-    uint triangleCount;
+    uint meshCount;
     VertexBuffer vertexBuffer;
     TriangleBuffer triangleBuffer;
     NodeBuffer nodeBuffer;
+    MaterialBuffer materialBuffer;
+    MeshInfoBuffer meshInfoBuffer;
 } PushConstants;
 
 
@@ -85,29 +95,31 @@ const vec3 spherePos = vec3(0.0, 0.0, 0.0);
 const float sphereRad = 0.5;
 
 
-bool raySphereIntersect(Ray ray, vec3 pos, float r) {
-    float a = dot(ray.rd, ray.rd);
-    vec3 s0_r0 = ray.ro - pos;
-    float b = 2.0 * dot(ray.rd, s0_r0);
-    float c = dot(s0_r0, s0_r0) - (r * r);
-
-    if (b * b - 4.0 * a * c < 0.0) {
-        return false;
-    }
-    // distance to sphere
-    float t = (-b - sqrt((b * b) - 4.0 * a * c)) / (2.0 * a);
-
-    return t > 0.0;
+float rayAABBIntersect(Ray ray, vec3 bmin, vec3 bmax) {
+    float tx1 = (bmin.x - ray.ro.x) / ray.rd.x;
+    float tx2 = (bmax.x - ray.ro.x) / ray.rd.x;
+    float tmin = min(tx1, tx2);
+    float tmax = max(tx1, tx2);
+    float ty1 = (bmin.y - ray.ro.y) / ray.rd.y;
+    float ty2 = (bmax.y - ray.ro.y) / ray.rd.y;
+    tmin = max(tmin, min(ty1, ty2));
+    tmax = min(tmax, max(ty1, ty2));
+    float tz1 = (bmin.z - ray.ro.z) / ray.rd.z;
+    float tz2 = (bmax.z - ray.ro.z) / ray.rd.z;
+    tmin = max(tmin, min(tz1, tz2));
+    tmax = min(tmax, max(tz1, tz2));
+    bool hit = tmax >= tmin && tmax > 0;
+    return hit ? tmin : 1e10;
 }
 
-HitInfo rayTriangleIntersect(Ray ray, Triangle tri) {
+HitInfo rayTriangleIntersect(Ray ray, Triangle tri, uint vertexOffset) {
     HitInfo hi;
     hi.hit = false;
     hi.dist = -1.0;
 
-    vec3 v1v0 = PushConstants.vertexBuffer.vertices[tri.v1].pos - PushConstants.vertexBuffer.vertices[tri.v0].pos;
-    vec3 v2v0 = PushConstants.vertexBuffer.vertices[tri.v2].pos - PushConstants.vertexBuffer.vertices[tri.v0].pos;
-    vec3 rov0 = ray.ro - PushConstants.vertexBuffer.vertices[tri.v0].pos;
+    vec3 v1v0 = PushConstants.vertexBuffer.vertices[tri.v1 + vertexOffset].pos - PushConstants.vertexBuffer.vertices[tri.v0 + vertexOffset].pos;
+    vec3 v2v0 = PushConstants.vertexBuffer.vertices[tri.v2 + vertexOffset].pos - PushConstants.vertexBuffer.vertices[tri.v0 + vertexOffset].pos;
+    vec3 rov0 = ray.ro - PushConstants.vertexBuffer.vertices[tri.v0 + vertexOffset].pos;
     vec3 n = cross(v1v0, v2v0);
 
     vec3 q = cross(rov0, ray.rd);
@@ -131,18 +143,40 @@ HitInfo rayTriangleIntersect(Ray ray, Triangle tri) {
 
 HitInfo intersects(Ray ray) {
     HitInfo hi;
+    hi.dist = 1e10;
     hi.hit = false;
 
-    Material mat;
-    mat.diffuseCol = vec3(1.0, 0.0, 0.0);
-    mat.emissiveStrength = 0.5;
-    mat.roughness = 1.0;
-    mat.metallic = 0.0;
-    for (int i = 0; i < PushConstants.triangleCount; i++) {
-        HitInfo triangleHi = rayTriangleIntersect(ray, PushConstants.triangleBuffer.triangles[i]);
-        if (triangleHi.hit && (!hi.hit || triangleHi.dist < hi.dist)) {
-            hi = triangleHi;
-            hi.material = mat;
+    for (uint m = 0; m < PushConstants.meshCount; m++) {
+        MeshInfo meshInfo = PushConstants.meshInfoBuffer.meshInfos[m];
+        uint stack[32];
+        int currStackIndex = 0;
+        stack[currStackIndex++] = 0;
+
+        while (currStackIndex > 0) {
+            Node node = PushConstants.nodeBuffer.nodes[stack[--currStackIndex] + meshInfo.nodeOffset];
+
+            if (node.triangleCount > 0) { // Leaf node
+                for (uint i = node.index; i < node.index + node.triangleCount; i++) {
+                    HitInfo triangleHi = rayTriangleIntersect(ray, PushConstants.triangleBuffer.triangles[i + meshInfo.triangleOffset], meshInfo.vertexOffset);
+                    if (triangleHi.hit && (triangleHi.dist < hi.dist)) {
+                        hi = triangleHi;
+                        hi.material = PushConstants.materialBuffer.materials[meshInfo.materialIndex];
+                    }
+                }
+            } else {
+                // The closest child will be looked at first
+                Node left = PushConstants.nodeBuffer.nodes[node.index + meshInfo.nodeOffset];
+                Node right = PushConstants.nodeBuffer.nodes[node.index + meshInfo.nodeOffset + 1];
+                float distLeft = rayAABBIntersect(ray, left.aabbMin, left.aabbMax);
+                float distRight = rayAABBIntersect(ray, right.aabbMin, right.aabbMax);
+
+                bool isLeftNearest = distLeft < distRight;
+                float distNear = isLeftNearest ? distLeft : distRight;
+                float distFar = isLeftNearest ? distRight : distLeft;
+
+                if (distFar < hi.dist) stack[currStackIndex++] = isLeftNearest ? node.index + 1 : node.index;
+                if (distNear < hi.dist) stack[currStackIndex++] = isLeftNearest ? node.index : node.index + 1;
+            }
         }
     }
 

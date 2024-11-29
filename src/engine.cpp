@@ -6,18 +6,22 @@ namespace engine
 {
     void Engine::init()
     {
-        camera_.position = glm::vec3(0.0, 0.0, 3.0);
         initWindow();
         initImGui();
         renderer_.init(window_);
 
-        // Trying the traceable mesh builder
+        camera_.position = glm::vec3(0.0, 0.0, 3.0);
+
         core_utils::TraceMeshBuilder builder;
         builder.setGeometry("./assets/models/grenade.obj");
-        builder.setMaterial(glm::vec3(0.0, 0.0, 0.0), 0.0, 0.5, 0.0);
-        core::TraceMesh grenade = builder.build();
-        builder.traverseBVH(0);
-        renderer_.uploadPathTracingScene(grenade);
+        builder.setMaterial(glm::vec3(1.0, 0.0, 0.0), 1.0, 0.5, 0.0);
+        core::TraceMesh grenade = builder.build(10);
+        builder.setGeometry("./assets/models/top_light.obj");
+        builder.setMaterial(glm::vec3(1.0, 1.0, 1.0), 1.0, 1.0, 0.0);
+        core::TraceMesh topLight = builder.build();
+        // builder.traverseBVH(0);
+        const std::vector<core::TraceMesh> scene = {grenade, topLight};
+        renderer_.uploadPathTracingScene(scene);
     }
 
     void Engine::initWindow()

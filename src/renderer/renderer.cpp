@@ -677,71 +677,122 @@ namespace renderer
         memcpy(data, &cam, sizeof(CameraUniform));
     }
 
-    void Renderer::uploadPathTracingScene(const core::TraceMesh& scene)
+    void Renderer::uploadPathTracingScene(const std::vector<core::TraceMesh>& scene)
     {
-        const size_t vertexBufferSize = scene.vertices.size() * sizeof(core::Vertex);
-        const size_t triangleBufferSize = scene.triangles.size() * sizeof(core::TraceTriangle);
-        const size_t nodeBufferSize = scene.nodes.size() * sizeof(core::TraceBVHNode);
+        // Aggregate scene data to build global buffers
+        std::vector<core::Vertex> vertices;
+        std::vector<core::TraceTriangle> triangles;
+        std::vector<core::TraceBVHNode> nodes;
+        std::vector<core::TraceMaterial> materials;
+        std::vector<TraceMeshInfo> meshInfos;
+
+        TraceMeshInfo offsets{};
+        for (const auto& mesh : scene)
+        {
+            vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
+            triangles.insert(triangles.end(), mesh.triangles.begin(), mesh.triangles.end());
+            nodes.insert(nodes.end(), mesh.nodes.begin(), mesh.nodes.end());
+            materials.push_back(mesh.material);
+            meshInfos.push_back(offsets);
+
+            offsets.vertexOffset += mesh.vertices.size();
+            offsets.triangleOffset += mesh.triangles.size();
+            offsets.nodeOffset += mesh.nodes.size();
+            offsets.materialIndex++;
+        }
+
+        // Calculate buffer sizes
+        const size_t vertexBufferSize = vertices.size() * sizeof(core::Vertex);
+        const size_t triangleBufferSize = triangles.size() * sizeof(core::TraceTriangle);
+        const size_t nodeBufferSize = nodes.size() * sizeof(core::TraceBVHNode);
+        const size_t materialBufferSize = materials.size() * sizeof(core::TraceMaterial);
+        const size_t meshInfoBufferSize = meshInfos.size() * sizeof(TraceMeshInfo);
+
         VkBufferDeviceAddressInfo deviceAdressInfo = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
         TraceSceneBuffers newScene;
-        const std::vector<TraceBufferInfo> buffers = {
-            {
-                scene.vertices.data(), vertexBufferSize, newScene.vertexBuffer, newScene.vertexBufferAddress
-            },
-            {
-                scene.triangles.data(), triangleBufferSize, newScene.triangleBuffer, newScene.triangleBufferAddress
-            },
-            {
-                scene.nodes.data(), nodeBufferSize, newScene.nodeBuffer, newScene.nodeBufferAddress
-            },
+
+        // Helper to create GPU buffer and retrieve address
+        auto createGPUBuffer = [&](size_t size, void* data, AllocatedBuffer& buffer, VkDeviceAddress& address)
+        {
+            buffer = renderer_utils::createBuffer(
+                allocator_, size,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                VMA_MEMORY_USAGE_GPU_ONLY);
+
+            VkBufferDeviceAddressInfo deviceAddressInfo = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buffer.buffer
+            };
+            address = vkGetBufferDeviceAddress(device_, &deviceAddressInfo);
+            return size;
         };
+
         AllocatedBuffer staging = renderer_utils::createBuffer(
-            allocator_, vertexBufferSize + triangleBufferSize + nodeBufferSize,
+            allocator_,
+            vertexBufferSize + triangleBufferSize + nodeBufferSize + materialBufferSize + meshInfoBufferSize,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VMA_MEMORY_USAGE_CPU_ONLY);
         void* stagingData = staging.allocation->GetMappedData();
-        size_t currentOffset = 0;
-        for (auto buffer : buffers)
-        {
-            buffer.dstBuffer = renderer_utils::createBuffer(allocator_, buffer.size,
-                                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                            VMA_MEMORY_USAGE_GPU_ONLY);
-            deviceAdressInfo.buffer = buffer.dstBuffer.buffer;
-            buffer.dstBufferAddress = vkGetBufferDeviceAddress(device_, &deviceAdressInfo);
 
-            memcpy((char*)stagingData + currentOffset, buffer.data, buffer.size);
-            currentOffset += buffer.size;
+        struct BufferData
+        {
+            void* data;
+            size_t size;
+            AllocatedBuffer* dstBuffer;
+            VkDeviceAddress* dstBufferAddress;
+        };
+
+        const std::vector<BufferData> bufferData = {
+            {vertices.data(), vertexBufferSize, &newScene.vertexBuffer, &newScene.vertexBufferAddress},
+            {triangles.data(), triangleBufferSize, &newScene.triangleBuffer, &newScene.triangleBufferAddress},
+            {nodes.data(), nodeBufferSize, &newScene.nodeBuffer, &newScene.nodeBufferAddress},
+            {materials.data(), materialBufferSize, &newScene.materialBuffer, &newScene.materialBufferAddress},
+            {meshInfos.data(), meshInfoBufferSize, &newScene.meshInfoBuffer, &newScene.meshInfoBufferAddress},
+        };
+
+
+        // Automatically create the GPU buffers and copy data from the vectors to staging buffer
+        size_t currentOffset = 0;
+        for (auto b : bufferData)
+        {
+            memcpy((char*)stagingData + currentOffset, b.data, b.size);
+            currentOffset += createGPUBuffer(b.size, b.data, *b.dstBuffer, *b.dstBufferAddress);
         }
 
+        // CPU to GPU copy
         immediateSubmit([&](VkCommandBuffer cmd)
         {
             size_t currSrcOffset = 0;
-            for (auto buffer : buffers)
+            for (const auto& b : bufferData)
             {
-                VkBufferCopy copy{0};
-                copy.dstOffset = 0;
+                VkBufferCopy copy{};
                 copy.srcOffset = currSrcOffset;
-                copy.size = buffer.size;
+                copy.dstOffset = 0;
+                copy.size = b.size;
 
-                vkCmdCopyBuffer(cmd, staging.buffer, buffer.dstBuffer.buffer, 1, &copy);
-                currSrcOffset += buffer.size;
+                vkCmdCopyBuffer(cmd, staging.buffer, b.dstBuffer->buffer, 1, &copy);
+                currSrcOffset += b.size;
             }
         });
         ptScene = newScene;
         ptPushConstants = {
-            static_cast<uint32_t>(scene.triangles.size()),
+            static_cast<uint32_t>(scene.size()),
             newScene.vertexBufferAddress,
             newScene.triangleBufferAddress,
             newScene.nodeBufferAddress,
+            newScene.materialBufferAddress,
+            newScene.meshInfoBufferAddress
         };
 
         renderer_utils::destroyBuffer(allocator_, staging);
-        deletionQueue_.push_function([&](){
+        deletionQueue_.push_function([&]()
+        {
             renderer_utils::destroyBuffer(allocator_, ptScene.vertexBuffer);
             renderer_utils::destroyBuffer(allocator_, ptScene.triangleBuffer);
             renderer_utils::destroyBuffer(allocator_, ptScene.nodeBuffer);
+            renderer_utils::destroyBuffer(allocator_, ptScene.materialBuffer);
+            renderer_utils::destroyBuffer(allocator_, ptScene.meshInfoBuffer);
         });
     }
 
@@ -762,10 +813,7 @@ namespace renderer
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
 
-        if (vkBeginCommandBuffer(cmd, &cmdBeginInfo) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Could not begin command buffer!");
-        }
+        VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo), "Could not begin command buffer!");
 
         renderer_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
@@ -779,7 +827,8 @@ namespace renderer
         std::vector<VkDescriptorSet> sets = {globalDescriptors_, ptDescriptors_};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ptPipelineLayout_, 0, 2,
                                 sets.data(), 0, nullptr);
-        vkCmdPushConstants(cmd, ptPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TracePushConstants), &ptPushConstants);
+        vkCmdPushConstants(cmd, ptPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TracePushConstants),
+                           &ptPushConstants);
         vkCmdDispatch(cmd, std::ceil(swapchainExtent_.width / 16.0), std::ceil(swapchainExtent_.height / 16.0), 1);
 
         // Copy the drawing result onto the swap chain image

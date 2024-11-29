@@ -10,7 +10,7 @@ class TraceMeshBuilder {
 public:
     void setGeometry(const std::string& objPath);
     void setMaterial(glm::vec3 color, float emissiveStrength, float roughness, float metallic);
-    core::TraceMesh build();
+    core::TraceMesh build(uint32_t depth = 0);
     void traverseBVH(uint32_t index); // used for debugging only
 
 private:
@@ -23,6 +23,7 @@ private:
     std::vector<core::TraceTriangle> triangles_;
     core::TraceMaterial material_{};
     std::vector<core::TraceBVHNode> nodes_;
+    uint32_t maxDepth_ = 0;
 };
 
 } // core_utils

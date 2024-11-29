@@ -5,6 +5,7 @@ namespace core_utils
 {
     void TraceMeshBuilder::setGeometry(const std::string& objPath)
     {
+        vertices_.clear(); triangles_.clear();
         loadTraceableGeometryFromObj(objPath, vertices_, triangles_);
     }
 
@@ -17,8 +18,10 @@ namespace core_utils
         material_ = m;
     }
 
-    core::TraceMesh TraceMeshBuilder::build()
+    core::TraceMesh TraceMeshBuilder::build(uint32_t depth)
     {
+        maxDepth_ = depth;
+        nodes_.clear();
         buildBVH();
         return core::TraceMesh{vertices_, triangles_, material_, nodes_};
     }
@@ -98,7 +101,7 @@ namespace core_utils
         unsigned int leftCount = i - node.index;
         unsigned int rightCount = node.triangleCount - leftCount;
 
-        if (currentDepth < 3 && leftCount > 1 && rightCount > 1)
+        if (currentDepth < maxDepth_ && leftCount > 1 && rightCount > 1)
         {
             auto firstChildIdx = static_cast<uint32_t>(nodes_.size());
 

@@ -18,7 +18,7 @@ namespace renderer
         void init(GLFWwindow* window);
         void newImGuiFrame();
         void render(const core::Camera& camera);
-        void uploadPathTracingScene(const core::TraceMesh& scene);
+        void uploadPathTracingScene(const std::vector<core::TraceMesh>& scene);
         void cleanup();
 
     private:
