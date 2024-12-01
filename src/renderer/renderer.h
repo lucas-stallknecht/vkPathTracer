@@ -6,6 +6,8 @@
 #include <vector>
 #include <cstdint>
 #include <functional>
+#include <stb_image.h>
+#include <array>
 
 #include "utils/descriptors.h"
 #include "core/camera.h"
@@ -19,7 +21,13 @@ namespace renderer
         void newImGuiFrame();
         void render(const core::Camera& camera);
         void uploadPathTracingScene(const std::vector<core::TraceMesh>& scene);
+        void uploadSkybox(const std::string& skyboxPath);
+        void resetAccumulation();
+        void toggleSkyboxUse();
+        void toggleSkyboxVisibility();
         void cleanup();
+
+        TracePushConstants ptPushConstants_{};
 
     private:
         void initVulkan(GLFWwindow* window);
@@ -42,6 +50,12 @@ namespace renderer
         void createCommands();
         void createSyncs();
         void updateGlobalBuffer(const core::Camera& camera) const;
+        AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
+        void destroyBuffer(const AllocatedBuffer& buffer);
+        AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped);
+        AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped);
+        AllocatedImage createCubemap(std::array<stbi_uc*, 6> data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage);
+        void destroyImage(const AllocatedImage& image);
         void draw();
         void drawImgui(VkCommandBuffer cmd, VkImageView targetImageView);
         void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
@@ -55,7 +69,9 @@ namespace renderer
         VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 
         VmaAllocator allocator_{};
-        renderer_utils::DescriptorAllocator globalDescriptorAllocator{};
+        renderer_utils::DescriptorAllocator globalDescriptorAllocator_{};
+        AllocatedImage skybox_;
+        VkSampler defaultNearestSampler_ = VK_NULL_HANDLE;
 
         VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
         std::vector<VkImage> swapchainImages_;
@@ -63,8 +79,9 @@ namespace renderer
         VkFormat swapchainFormat_ = VK_FORMAT_UNDEFINED;
         VkExtent2D swapchainExtent_ = {0, 0};
 
-        AllocatedImage drawImage_{};
-        AllocatedBuffer globalBuffer_{};
+        AllocatedImage drawImage_;
+
+        AllocatedBuffer globalBuffer_;
         VkDescriptorSetLayout globalDescLayout_ = VK_NULL_HANDLE;
         VkDescriptorSet globalDescriptors_ = VK_NULL_HANDLE;
 
@@ -72,10 +89,9 @@ namespace renderer
         VkDescriptorSet ptDescriptors_ = VK_NULL_HANDLE;
         VkPipeline ptPipeline_ = VK_NULL_HANDLE;
         VkPipelineLayout ptPipelineLayout_ = VK_NULL_HANDLE;
-        TraceSceneBuffers ptScene;
-        TracePushConstants ptPushConstants = {};
+        TraceSceneBuffers ptScene_;
 
-        ImmediateHandles immediateHandles_{};
+        ImmediateHandles immediateHandles_;
         DeletionQueue deletionQueue_;
         FrameData frames_[FRAME_OVERLAP];
         FrameData& getCurrentFrame() { return frames_[frameNumber_ % FRAME_OVERLAP]; }

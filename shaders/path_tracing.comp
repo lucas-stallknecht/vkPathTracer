@@ -37,7 +37,6 @@ struct MeshInfo {
     uint materialIndex;
 };
 
-
 struct Ray {
     vec3 ro;
     vec3 rd;
@@ -49,6 +48,7 @@ struct HitInfo {
     vec3 normal;
     bool hit;
     Material material;
+    uint triIndex;
 };
 
 struct Camera {
@@ -59,12 +59,13 @@ struct Camera {
 
 
 
-layout (local_size_x = 16, local_size_y = 16) in;
+layout (local_size_x = 8, local_size_y = 8) in;
 
 layout (set = 0, binding = 0) uniform globalBuffer {
     Camera cam;
 };
-layout (rgba16f, set = 1, binding = 0) uniform image2D image;
+layout (set = 0, binding = 1) uniform samplerCube skybox;
+layout (rgba32f, set = 1, binding = 0) uniform image2D image;
 layout (buffer_reference, std430) readonly buffer VertexBuffer {
     Vertex vertices[];
 };
@@ -82,19 +83,47 @@ layout (buffer_reference, std430) readonly buffer MeshInfoBuffer {
 };
 layout (push_constant) uniform constants
 {
-    uint meshCount;
     VertexBuffer vertexBuffer;
     TriangleBuffer triangleBuffer;
     NodeBuffer nodeBuffer;
     MaterialBuffer materialBuffer;
     MeshInfoBuffer meshInfoBuffer;
+    uint meshCount;
+    uint frame;
+    uint useSkybox;
+    uint skyboxVisbility;
 } PushConstants;
 
 
-const vec3 spherePos = vec3(0.0, 0.0, 0.0);
-const float sphereRad = 0.5;
+#define PI 3.14159265359f
+const uint BOUNCES = 5;
+
+// ========= RANDOM FUNCTIONS =========
+uint wang_hash(inout uint seed) {
+    seed = uint(seed ^ uint(61)) ^ uint(seed >> uint(16));
+    seed *= uint(9);
+    seed = seed ^ (seed >> 4);
+    seed *= uint(0x27d4eb2d);
+    seed = seed ^ (seed >> 15);
+    return seed;
+}
+
+float randomFloat01(inout uint state) {
+    return float(wang_hash(state)) / 4294967296.0;
+}
+
+vec3 randomUnitVector(inout uint state) {
+    float z = randomFloat01(state) * 2.0f - 1.0f;
+    float a = randomFloat01(state) * 2.0 * PI;
+    float r = sqrt(1.0f - z * z);
+    float x = r * cos(a);
+    float y = r * sin(a);
+    return vec3(x, y, z);
+}
+// ====================================
 
 
+// ========= RAY SURFACE =========
 float rayAABBIntersect(Ray ray, vec3 bmin, vec3 bmax) {
     float tx1 = (bmin.x - ray.ro.x) / ray.rd.x;
     float tx2 = (bmax.x - ray.ro.x) / ray.rd.x;
@@ -116,10 +145,10 @@ HitInfo rayTriangleIntersect(Ray ray, Triangle tri, uint vertexOffset) {
     HitInfo hi;
     hi.hit = false;
     hi.dist = -1.0;
-
-    vec3 v1v0 = PushConstants.vertexBuffer.vertices[tri.v1 + vertexOffset].pos - PushConstants.vertexBuffer.vertices[tri.v0 + vertexOffset].pos;
-    vec3 v2v0 = PushConstants.vertexBuffer.vertices[tri.v2 + vertexOffset].pos - PushConstants.vertexBuffer.vertices[tri.v0 + vertexOffset].pos;
-    vec3 rov0 = ray.ro - PushConstants.vertexBuffer.vertices[tri.v0 + vertexOffset].pos;
+    vec3 v0 = PushConstants.vertexBuffer.vertices[tri.v0 + vertexOffset].pos;
+    vec3 v1v0 = PushConstants.vertexBuffer.vertices[tri.v1 + vertexOffset].pos - v0;
+    vec3 v2v0 = PushConstants.vertexBuffer.vertices[tri.v2 + vertexOffset].pos - v0;
+    vec3 rov0 = ray.ro - v0;
     vec3 n = cross(v1v0, v2v0);
 
     vec3 q = cross(rov0, ray.rd);
@@ -140,8 +169,27 @@ HitInfo rayTriangleIntersect(Ray ray, Triangle tri, uint vertexOffset) {
 
     return hi;
 }
+// ====================================
 
-HitInfo intersects(Ray ray) {
+// ====================================
+vec3 calculateBarycentric(vec3 pos, vec3 a, vec3 b, vec3 c)
+{
+    vec3 v0 = b - a; vec3 v1 = c - a; vec3 v2 = pos - a;
+    float d00 = dot(v0, v0);
+    float d01 = dot(v0, v1);
+    float d11 = dot(v1, v1);
+    float d20 = dot(v2, v0);
+    float d21 = dot(v2, v1);
+    float denom = d00 * d11 - d01 * d01;
+    vec3 bar;
+    bar.y = (d11 * d20 - d01 * d21) / denom;
+    bar.z = (d00 * d21 - d01 * d20) / denom;
+    bar.x = 1.0f - bar.y - bar.z;
+    return bar;
+}
+// ====================================
+
+HitInfo intersect(Ray ray) {
     HitInfo hi;
     hi.dist = 1e10;
     hi.hit = false;
@@ -155,12 +203,14 @@ HitInfo intersects(Ray ray) {
         while (currStackIndex > 0) {
             Node node = PushConstants.nodeBuffer.nodes[stack[--currStackIndex] + meshInfo.nodeOffset];
 
-            if (node.triangleCount > 0) { // Leaf node
+            // Leaf node
+            if (node.triangleCount > 0) {
                 for (uint i = node.index; i < node.index + node.triangleCount; i++) {
                     HitInfo triangleHi = rayTriangleIntersect(ray, PushConstants.triangleBuffer.triangles[i + meshInfo.triangleOffset], meshInfo.vertexOffset);
                     if (triangleHi.hit && (triangleHi.dist < hi.dist)) {
                         hi = triangleHi;
                         hi.material = PushConstants.materialBuffer.materials[meshInfo.materialIndex];
+                        hi.triIndex = i;
                     }
                 }
             } else {
@@ -187,13 +237,61 @@ vec3 trace(Ray ray, inout uint seed) {
     vec3 rayCol = vec3(1.);
     vec3 pixelColor = vec3(0.);
 
-    HitInfo hi = intersects(ray);
-    if (!hi.hit) {
-        return pixelColor;
-    }
-    pixelColor += (hi.material.diffuseCol * hi.material.emissiveStrength) * rayCol;
-    rayCol *= hi.material.diffuseCol;
+    for (int i = 0; i < BOUNCES; i++) {
+        HitInfo hi = intersect(ray);
+        if (!hi.hit) {
 
+            if(PushConstants.useSkybox == 1) {
+                vec3 skyColor = texture(skybox, ray.rd).rgb;
+                pixelColor += skyColor * 3.0 * rayCol * clamp(i, PushConstants.skyboxVisbility, 1);
+            }
+            break;
+        }
+        vec3 albedo = hi.material.diffuseCol;
+
+        // Texture mapping tests
+//        Triangle tri = PushConstants.triangleBuffer.triangles[hi.triIndex];
+//        Vertex v0 = PushConstants.vertexBuffer.vertices[tri.v0];
+//        Vertex v1 = PushConstants.vertexBuffer.vertices[tri.v1];
+//        Vertex v2 = PushConstants.vertexBuffer.vertices[tri.v2];
+//        vec3 bar = calculateBarycentric(hi.pos, v0.pos, v1.pos, v2.pos);
+//        hi.normal = bar.x * tri.v0.normal + bar.y * tri.v1.normal + bar.z * tri.v2.normal;
+//        vec2 uv = bar.x * vec2(v0.uv1, v0.uv2) + bar.y * vec2(v1.uv1, v1.uv2) + bar.z * vec2(v2.uv1, v2.uv2);
+//        albedo = texture(billy, uv).rgb;
+
+
+        // we assumed that emissiveCol is the same as diffuseCol for the emissive objects (1 less mat component to share)
+        //                    emitted light                                 the incomming light will be tinted by all the objects
+        //                                                                  that have been hit so far (explaing the * col)
+        pixelColor += (albedo * hi.material.emissiveStrength) * rayCol;
+        rayCol *= albedo;
+
+        Ray newRay;
+        newRay.ro = hi.pos + hi.normal * 0.001;
+
+        // roughness component
+        // the bigger the roughness, the more the ray will be reflected in a diffuse manner
+        // instead of following the specular direction
+        vec3 diffuseDir = normalize(hi.normal + randomUnitVector(seed));
+        vec3 specularReflectionDir = reflect(ray.rd, hi.normal);
+        specularReflectionDir = normalize(mix(specularReflectionDir, diffuseDir, hi.material.roughness));
+
+        // the less metallic the component is, the less specular reflection there will be
+        float shouldSpecular = (randomFloat01(seed) < hi.material.metallic) ? 1.0f : 0.0f;
+        newRay.rd = normalize(mix(diffuseDir, specularReflectionDir, shouldSpecular));
+
+        // early stoppage
+        // https://blog.demofox.org/2020/06/06/casual-shadertoy-path-tracing-2-image-improvement-and-glossy-reflections/
+        float p = max(rayCol.r, max(rayCol.g, rayCol.b));
+        if (randomFloat01(seed) > p) {
+            break;
+        }
+        // Add the energy we 'lose' by randomly terminating paths
+        rayCol *= 1.0f / p;
+
+
+        ray = newRay;
+    }
 
     return pixelColor;
 }
@@ -205,20 +303,21 @@ void main()
     vec2 uv = 2.0 * (vec2(texelCoord) / (gl_WorkGroupSize.xy * gl_NumWorkGroups.xy)) - 1.0;
     uv.y *= -1.0;
 
-    Ray ray;
-    ray.ro = cam.pos;
-    // apply the inv projection and view matrices to the classical RT ray direction
-    vec4 target = cam.invProj * vec4(uv.x, uv.y, 1.0, 1.0);
-    vec3 normalizedTarget = normalize(vec3(target) / target.w);
-    ray.rd = vec3(cam.invView * vec4(normalizedTarget, 0.0));
-
-    vec3 outputCol = vec3(0.0);
-    uint seed = uint(uint(texelCoord.x) * uint(1973) + uint(texelCoord.y) * uint(9277) + uint(26699)) | uint(1);
     ivec2 size = imageSize(image);
-
     if (texelCoord.x < size.x && texelCoord.y < size.y)
     {
-        outputCol += trace(ray, seed);
-        imageStore(image, texelCoord, vec4(outputCol, 1.0));
+        Ray ray;
+        ray.ro = cam.pos;
+        // apply the inv projection and view matrices to the classical RT ray direction
+        vec4 target = cam.invProj * vec4(uv.x, uv.y, 1.0, 1.0);
+        vec3 normalizedTarget = normalize(vec3(target) / target.w);
+        ray.rd = vec3(cam.invView * vec4(normalizedTarget, 0.0));
+
+        uint seed = uint(uint(texelCoord.x) * uint(1973) + uint(texelCoord.y) * uint(9277) + uint(PushConstants.frame) * uint(26699));
+        vec3 col = trace(ray, seed);
+
+        vec3 colPrev = imageLoad(image, texelCoord).rgb;
+        col = mix(colPrev, col, 1.0 / (float(PushConstants.frame) + 1));
+        imageStore(image, texelCoord, vec4(col, 1.0));
     }
 }

@@ -10,18 +10,18 @@ namespace engine
         initImGui();
         renderer_.init(window_);
 
-        camera_.position = glm::vec3(0.0, 0.0, 3.0);
+        camera_.position = glm::vec3(0.0, 0.0, 1.5);
 
         core_utils::TraceMeshBuilder builder;
         builder.setGeometry("./assets/models/grenade.obj");
-        builder.setMaterial(glm::vec3(1.0, 0.0, 0.0), 1.0, 0.5, 0.0);
+        builder.setMaterial(glm::vec3(0.850743, 0.463014, 0.359456), 0.0, 0.7, 0.0);
         core::TraceMesh grenade = builder.build(10);
         builder.setGeometry("./assets/models/top_light.obj");
         builder.setMaterial(glm::vec3(1.0, 1.0, 1.0), 1.0, 1.0, 0.0);
         core::TraceMesh topLight = builder.build();
-        // builder.traverseBVH(0);
         const std::vector<core::TraceMesh> scene = {grenade, topLight};
         renderer_.uploadPathTracingScene(scene);
+        renderer_.uploadSkybox("./assets/skyboxes/paris");
     }
 
     void Engine::initWindow()
@@ -76,26 +76,32 @@ namespace engine
         if (keysArePressed_['W'] && focused_)
         {
             camera_.moveForward(deltaTime);
+            renderer_.resetAccumulation();
         }
         if (keysArePressed_['S'] && focused_)
         {
             camera_.moveBackward(deltaTime);
+            renderer_.resetAccumulation();
         }
         if (keysArePressed_['A'] && focused_)
         {
             camera_.moveLeft(deltaTime);
+            renderer_.resetAccumulation();
         }
         if (keysArePressed_['D'] && focused_)
         {
             camera_.moveRight(deltaTime);
+            renderer_.resetAccumulation();
         }
         if (keysArePressed_['Q'] && focused_)
         {
             camera_.moveDown(deltaTime);
+            renderer_.resetAccumulation();
         }
         if (keysArePressed_[' '] && focused_)
         {
             camera_.moveUp(deltaTime);
+            renderer_.resetAccumulation();
         }
     }
 
@@ -113,6 +119,9 @@ namespace engine
         }
         float xOffset = xpos - lastMousePosition_.x;
         float yOffset = lastMousePosition_.y - ypos;
+
+        if (abs(xOffset) > 0.0 || abs(yOffset) > 0.0)
+            renderer_.resetAccumulation();
 
         lastMousePosition_.x = xpos;
         lastMousePosition_.y = ypos;
@@ -146,7 +155,28 @@ namespace engine
 
             renderer_.newImGuiFrame();
             ImGui::NewFrame();
-            ImGui::ShowAboutWindow();
+            {
+                ImGui::Begin("Settings");
+                ImGui::Text("%.1f ms/frame (%.1f FPS)", 1000.0 / io->Framerate, io->Framerate);
+                if (ImGui::CollapsingHeader("Path tracing", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    bool useChange = renderer_.ptPushConstants_.useSkybox == 1;
+                    bool visibleChange = renderer_.ptPushConstants_.skyboxVisible == 1;
+                    if (ImGui::Checkbox("Use skybox lighting", &useChange))
+                    {
+                        renderer_.ptPushConstants_.useSkybox = !renderer_.ptPushConstants_.useSkybox;
+                        renderer_.resetAccumulation();
+                    };
+                    if (ImGui::Checkbox("Show skybox", &visibleChange))
+                    {
+                        renderer_.ptPushConstants_.skyboxVisible = !renderer_.ptPushConstants_.skyboxVisible;
+                        renderer_.resetAccumulation();
+                    }
+                }
+
+                ImGui::End();
+            }
+            ImGui::EndFrame();
             ImGui::Render();
             renderer_.render(camera_);
         }

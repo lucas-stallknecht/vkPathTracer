@@ -133,12 +133,15 @@ namespace renderer
     };
 
     struct TracePushConstants {
-        uint32_t meshCount;
         VkDeviceAddress vertexBuffer;
         VkDeviceAddress triangleBuffer;
         VkDeviceAddress nodeBuffer;
         VkDeviceAddress materialBuffer;
         VkDeviceAddress meshInfoBuffer;
+        uint32_t meshCount;
+        uint32_t frame;
+        uint32_t useSkybox;
+        uint32_t skyboxVisible;
     };
 }
 

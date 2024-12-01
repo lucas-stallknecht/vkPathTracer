@@ -10,4 +10,6 @@ namespace renderer_utils
     VkRenderingAttachmentInfo attachmentInfo(VkImageView view, VkClearValue* clear, VkImageLayout layout);
     VkRenderingInfo renderingInfo(VkExtent2D renderExtent, VkRenderingAttachmentInfo* colorAttachment,
                                   VkRenderingAttachmentInfo* depthAttachment);
+    VkImageCreateInfo imageCreateInfo(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent, bool cubeMap = false);
+    VkImageViewCreateInfo imageViewCreateInfo(VkFormat format, VkImage iamge, VkImageAspectFlags aspectFlags, bool cubeMap = false);
 }

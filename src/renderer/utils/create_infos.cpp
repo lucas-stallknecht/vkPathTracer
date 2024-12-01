@@ -75,4 +75,43 @@ namespace renderer_utils
 
         return info;
     }
+
+    VkImageCreateInfo imageCreateInfo(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent, bool cubeMap)
+    {
+        VkImageCreateInfo imgCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = format,
+            .extent = extent,
+            .mipLevels = 1,
+            .arrayLayers = cubeMap ? 6u : 1u,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = usageFlags
+        };
+        if(cubeMap)
+        {
+            imgCreateInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        }
+
+        return imgCreateInfo;
+    }
+
+    VkImageViewCreateInfo imageViewCreateInfo(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags, bool cubeMap)
+    {
+        VkImageViewCreateInfo imgViewCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = image,
+            .viewType = cubeMap ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D,
+            .format = format,
+        };
+        imgViewCreateInfo.subresourceRange.aspectMask = aspectFlags;
+        imgViewCreateInfo.subresourceRange.baseMipLevel = 0;
+        imgViewCreateInfo.subresourceRange.levelCount = 1;
+        imgViewCreateInfo.subresourceRange.baseArrayLayer = 0;
+        imgViewCreateInfo.subresourceRange.layerCount = cubeMap ? 6u : 1u;
+
+        return imgViewCreateInfo;
+    }
+
 }

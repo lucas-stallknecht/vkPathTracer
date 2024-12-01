@@ -1,4 +1,7 @@
+#define STB_IMAGE_IMPLEMENTATION
 #include "images.h"
+#include <iostream>
+
 
 namespace renderer_utils
 {
@@ -33,6 +36,38 @@ namespace renderer_utils
                                             ? VK_IMAGE_ASPECT_DEPTH_BIT
                                             : VK_IMAGE_ASPECT_COLOR_BIT;
         imageBarrier.subresourceRange = getImageSubresourceRange(aspectMask);
+
+        VkDependencyInfo depInfo = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &imageBarrier,
+        };
+
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
+
+
+    void transitionCubemap(VkCommandBuffer cmd, VkImage image, VkImageLayout currentLayout,
+                     VkImageLayout newLayout)
+    {
+        VkImageMemoryBarrier2 imageBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT,
+            .oldLayout = currentLayout,
+            .newLayout = newLayout,
+            .image = image
+        };
+        VkImageSubresourceRange subImage = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = VK_REMAINING_MIP_LEVELS,
+            .baseArrayLayer = 0,
+            .layerCount = 6,
+        };
+        imageBarrier.subresourceRange = subImage;
 
         VkDependencyInfo depInfo = {
             .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -78,5 +113,23 @@ namespace renderer_utils
             .filter = VK_FILTER_LINEAR,
         };
         vkCmdBlitImage2(cmd, &blitInfo);
+    }
+
+    stbi_uc* loadTextureData(const std::string& path, VkExtent3D& size)
+    {
+        int texWidth, texHeight, texChannels;
+        stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+        size.width = static_cast<unsigned int>(texWidth);
+        size.height = static_cast<unsigned int>(texHeight);
+
+        if (!pixels) {
+            throw std::runtime_error("failed to load texture image!");
+        }
+        return pixels;
+    }
+
+    void freeImageData(stbi_uc* data)
+    {
+        stbi_image_free(data);
     }
 } // renderer_utils

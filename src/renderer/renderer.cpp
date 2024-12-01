@@ -9,6 +9,7 @@
 #include <cassert>
 #include <string>
 #include <set>
+#include <array>
 
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
@@ -17,7 +18,6 @@
 #include "utils/shaders.h"
 #include "utils/compatibility.h"
 #include "utils/create_infos.h"
-#include "utils/buffers.h"
 
 namespace renderer
 {
@@ -35,12 +35,12 @@ namespace renderer
         createSwapchain(window);
         createVmaAllocator();
         createDrawImage();
+        createCommands();
+        createSyncs();
         createGlobalBuffer();
         createGlobalDescriptors();
         createPathTracingDescriptors();
         createPathTracingPipeline();
-        createCommands();
-        createSyncs();
     }
 
     void Renderer::createInstance(GLFWwindow* window)
@@ -171,9 +171,14 @@ namespace renderer
             .pNext = &sync2Feature,
             .bufferDeviceAddress = VK_TRUE,
         };
+        VkPhysicalDeviceDescriptorIndexingFeatures indexFeatures = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
+            .pNext = &bufferDeviceAddressFeature,
+            .descriptorBindingPartiallyBound = VK_TRUE
+        };
         VkPhysicalDeviceDynamicRenderingFeatures dynRendFeature = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
-            .pNext = &bufferDeviceAddressFeature,
+            .pNext = &indexFeatures,
             .dynamicRendering = VK_TRUE,
         };
 
@@ -237,7 +242,6 @@ namespace renderer
                 return availablePresentMode;
             }
         }
-
         return VK_PRESENT_MODE_FIFO_KHR;
     }
 
@@ -353,62 +357,86 @@ namespace renderer
 
     void Renderer::createDrawImage()
     {
-        VkImageCreateInfo imgCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .format = VK_FORMAT_R16G16B16A16_SFLOAT,
-            .extent = {swapchainExtent_.width, swapchainExtent_.height, 1},
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-        };
-
-        VmaAllocationCreateInfo rimg_allocinfo = {
-            .usage = VMA_MEMORY_USAGE_GPU_ONLY,
-            .requiredFlags = static_cast<VkMemoryPropertyFlags>(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-        };
-
-        //allocate and create the image
-        VmaAllocation imgAllocation;
-        vmaCreateImage(allocator_, &imgCreateInfo, &rimg_allocinfo, &drawImage_.image, &imgAllocation, nullptr);
-
-        VkImageViewCreateInfo imgViewCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = drawImage_.image,
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = VK_FORMAT_R16G16B16A16_SFLOAT,
-        };
-        imgViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        imgViewCreateInfo.subresourceRange.baseMipLevel = 0;
-        imgViewCreateInfo.subresourceRange.levelCount = 1;
-        imgViewCreateInfo.subresourceRange.baseArrayLayer = 0;
-        imgViewCreateInfo.subresourceRange.layerCount = 1;
-
-        VK_CHECK(vkCreateImageView(device_, &imgViewCreateInfo, nullptr, &drawImage_.imageView),
-                 "Failed to create intermediate image view!");
-
-        drawImage_.allocation = imgAllocation;
-        drawImage_.imageExtent = {swapchainExtent_.width, swapchainExtent_.height, 1};
-        drawImage_.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-
+        drawImage_ = createImage(
+            {swapchainExtent_.width, swapchainExtent_.height, 1},
+            VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, false
+        );
         deletionQueue_.push_function([=]()
         {
-            vkDestroyImageView(device_, drawImage_.imageView, nullptr);
-            vmaDestroyImage(allocator_, drawImage_.image, drawImage_.allocation);
+            destroyImage(drawImage_);
         });
     }
 
     void Renderer::createGlobalBuffer()
     {
-        globalBuffer_ = renderer_utils::createBuffer(
-            allocator_,
+        globalBuffer_ = createBuffer(
             sizeof(CameraUniform),
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VMA_MEMORY_USAGE_CPU_TO_GPU
         );
+
+        VkSamplerCreateInfo sampl = {
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = VK_FILTER_LINEAR,
+            .minFilter = VK_FILTER_LINEAR
+        };
+        vkCreateSampler(device_, &sampl, nullptr, &defaultNearestSampler_);
+
+        deletionQueue_.push_function([=]()
+        {
+            destroyBuffer(globalBuffer_);
+            vkDestroySampler(device_, defaultNearestSampler_, nullptr);
+        });
+    }
+
+    void Renderer::uploadSkybox(const std::string& skyboxDirectory)
+    {
+        if(skybox_.image != VK_NULL_HANDLE)
+        {
+            destroyImage(skybox_);
+        }
+        std::array<std::string, 6> faces {
+            skyboxDirectory + "/px.png", // right
+            skyboxDirectory + "/nx.png", // left
+            skyboxDirectory + "/py.png", // top
+            skyboxDirectory + "/ny.png", // bottom
+            skyboxDirectory + "/pz.png", // front
+            skyboxDirectory + "/nz.png" // back
+        };
+
+        VkExtent3D texSize = {1, 1, 1};
+        std::array<stbi_uc*, 6> textureData{};
+        for (int i = 0; i < faces.size(); i++)
+        {
+            textureData[i] = renderer_utils::loadTextureData(faces[i], texSize);
+        }
+        skybox_ = createCubemap(textureData, texSize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+        for (int i = 0; i < faces.size(); i++)
+        {
+            renderer_utils::freeImageData(textureData[i]);
+        }
+
+        VkDescriptorImageInfo skyboxInfo = {
+            .sampler = defaultNearestSampler_,
+            .imageView = skybox_.imageView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL
+        };
+        VkWriteDescriptorSet imgWrtie = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = globalDescriptors_,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &skyboxInfo
+        };
+        vkUpdateDescriptorSets(device_, 1, &imgWrtie, 0, nullptr);
+        ptPushConstants_.useSkybox = 1;
+
+        deletionQueue_.push_function([=]()
+        {
+            destroyImage(skybox_);
+        });
     }
 
     void Renderer::createGlobalDescriptors()
@@ -416,14 +444,24 @@ namespace renderer
         // Global descriptors
         renderer_utils::DescriptorLayoutBuilder globalBuilder;
         globalBuilder.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-        globalDescLayout_ = globalBuilder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT);
+        globalBuilder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+
+        VkDescriptorBindingFlags bindingFlgas[2] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT};
+        VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+            .bindingCount = 2,
+            .pBindingFlags = &bindingFlgas[0]
+        };
+        globalDescLayout_ = globalBuilder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT, &bindingFlagsInfo);
+
         std::vector<renderer_utils::DescriptorAllocator::PoolSizeRatio> sizes =
         {
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
         };
-        globalDescriptorAllocator.initPool(device_, 10, sizes);
-        globalDescriptors_ = globalDescriptorAllocator.allocate(device_, globalDescLayout_);
+        globalDescriptorAllocator_.initPool(device_, 10, sizes);
+        globalDescriptors_ = globalDescriptorAllocator_.allocate(device_, globalDescLayout_);
 
         VkDescriptorBufferInfo globalBufferInfo = {
             .buffer = globalBuffer_.buffer,
@@ -438,6 +476,8 @@ namespace renderer
             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .pBufferInfo = &globalBufferInfo,
         };
+        ptPushConstants_.useSkybox = 1;
+        ptPushConstants_.skyboxVisible = 0;
 
         vkUpdateDescriptorSets(device_, 1, &globalBufferWrite, 0, nullptr);
         deletionQueue_.push_function([=]()
@@ -451,7 +491,7 @@ namespace renderer
         renderer_utils::DescriptorLayoutBuilder ptBuilder;
         ptBuilder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         ptDescLayout_ = ptBuilder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT);
-        ptDescriptors_ = globalDescriptorAllocator.allocate(device_, ptDescLayout_);
+        ptDescriptors_ = globalDescriptorAllocator_.allocate(device_, ptDescLayout_);
 
         VkDescriptorImageInfo imgInfo = {
             .imageView = drawImage_.imageView,
@@ -470,7 +510,7 @@ namespace renderer
         deletionQueue_.push_function([=]()
         {
             vkDestroyDescriptorSetLayout(device_, ptDescLayout_, nullptr);
-            globalDescriptorAllocator.destroyPool(device_);
+            globalDescriptorAllocator_.destroyPool(device_);
         });
     }
 
@@ -506,6 +546,7 @@ namespace renderer
 
         VkComputePipelineCreateInfo pipelineInfo{
             .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            // .flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
             .stage = computeShaderStageInfo,
             .layout = ptPipelineLayout_,
         };
@@ -640,8 +681,8 @@ namespace renderer
             .Device = device_,
             .Queue = queue_,
             .DescriptorPool = imguiPool,
-            .MinImageCount = 3,
-            .ImageCount = 3,
+            .MinImageCount = 2,
+            .ImageCount = 2,
             .MSAASamples = VK_SAMPLE_COUNT_1_BIT,
             .UseDynamicRendering = true
         };
@@ -675,6 +716,11 @@ namespace renderer
             .invProj = glm::inverse(camera.projMatrix)
         };
         memcpy(data, &cam, sizeof(CameraUniform));
+    }
+
+    void Renderer::resetAccumulation()
+    {
+        ptPushConstants_.frame = 0;
     }
 
     void Renderer::uploadPathTracingScene(const std::vector<core::TraceMesh>& scene)
@@ -714,8 +760,8 @@ namespace renderer
         // Helper to create GPU buffer and retrieve address
         auto createGPUBuffer = [&](size_t size, void* data, AllocatedBuffer& buffer, VkDeviceAddress& address)
         {
-            buffer = renderer_utils::createBuffer(
-                allocator_, size,
+            buffer = createBuffer(
+                size,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                 VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -728,8 +774,7 @@ namespace renderer
             return size;
         };
 
-        AllocatedBuffer staging = renderer_utils::createBuffer(
-            allocator_,
+        AllocatedBuffer staging = createBuffer(
             vertexBufferSize + triangleBufferSize + nodeBufferSize + materialBufferSize + meshInfoBufferSize,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VMA_MEMORY_USAGE_CPU_ONLY);
@@ -775,25 +820,201 @@ namespace renderer
                 currSrcOffset += b.size;
             }
         });
-        ptScene = newScene;
-        ptPushConstants = {
-            static_cast<uint32_t>(scene.size()),
+        ptScene_ = newScene;
+        ptPushConstants_ = {
             newScene.vertexBufferAddress,
             newScene.triangleBufferAddress,
             newScene.nodeBufferAddress,
             newScene.materialBufferAddress,
-            newScene.meshInfoBufferAddress
+            newScene.meshInfoBufferAddress,
+            static_cast<uint32_t>(scene.size()),
+            0
         };
 
-        renderer_utils::destroyBuffer(allocator_, staging);
+        destroyBuffer(staging);
         deletionQueue_.push_function([&]()
         {
-            renderer_utils::destroyBuffer(allocator_, ptScene.vertexBuffer);
-            renderer_utils::destroyBuffer(allocator_, ptScene.triangleBuffer);
-            renderer_utils::destroyBuffer(allocator_, ptScene.nodeBuffer);
-            renderer_utils::destroyBuffer(allocator_, ptScene.materialBuffer);
-            renderer_utils::destroyBuffer(allocator_, ptScene.meshInfoBuffer);
+            destroyBuffer(ptScene_.vertexBuffer);
+            destroyBuffer(ptScene_.triangleBuffer);
+            destroyBuffer(ptScene_.nodeBuffer);
+            destroyBuffer(ptScene_.materialBuffer);
+            destroyBuffer(ptScene_.meshInfoBuffer);
         });
+    }
+
+
+    AllocatedBuffer Renderer::createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage)
+    {
+        VkBufferCreateInfo bufferInfo = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = allocSize,
+            .usage = usage,
+        };
+
+        VmaAllocationCreateInfo vmaallocInfo = {
+            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            .usage = memoryUsage,
+        };
+
+        renderer::AllocatedBuffer newBuffer;
+        VK_CHECK(vmaCreateBuffer(allocator_, &bufferInfo, &vmaallocInfo, &newBuffer.buffer, &newBuffer.allocation,
+                     &newBuffer.info), "Could not create buffer!");
+
+        return newBuffer;
+    }
+
+    void Renderer::destroyBuffer(const AllocatedBuffer& buffer)
+    {
+        vmaDestroyBuffer(allocator_, buffer.buffer, buffer.allocation);
+    }
+
+    AllocatedImage Renderer::createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped)
+    {
+        AllocatedImage newImage;
+        newImage.imageFormat = format;
+        newImage.imageExtent = size;
+
+        VkImageCreateInfo imgInfo = renderer_utils::imageCreateInfo(format, usage, size);
+        if (mipmapped)
+        {
+            imgInfo.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(size.width, size.height)))) + 1;
+        }
+
+        // always allocate images on dedicated GPU memory
+        VmaAllocationCreateInfo allocinfo = {};
+        allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+        allocinfo.requiredFlags = static_cast<VkMemoryPropertyFlags>(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        // allocate and create the image
+        VK_CHECK(vmaCreateImage(allocator_, &imgInfo, &allocinfo, &newImage.image, &newImage.allocation, nullptr),
+                 "Could not create image!");
+
+        // if the format is a depth format, we will need to have it use the correct
+        // aspect flag
+        VkImageAspectFlags aspectFlag = VK_IMAGE_ASPECT_COLOR_BIT;
+        if (format == VK_FORMAT_D32_SFLOAT)
+        {
+            aspectFlag = VK_IMAGE_ASPECT_DEPTH_BIT;
+        }
+
+        // build a image-view for the image
+        VkImageViewCreateInfo viewInfo = renderer_utils::imageViewCreateInfo(format, newImage.image, aspectFlag);
+        viewInfo.subresourceRange.levelCount = imgInfo.mipLevels;
+
+        VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &newImage.imageView), "Could not create image view!");
+
+        return newImage;
+    }
+
+    AllocatedImage Renderer::createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage,
+                                         bool mipmapped)
+    {
+        size_t dataSize = size.depth * size.width * size.height * 4;
+        AllocatedBuffer uploadbuffer = createBuffer(dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                    VMA_MEMORY_USAGE_CPU_TO_GPU);
+
+        memcpy(uploadbuffer.info.pMappedData, data, dataSize);
+
+        AllocatedImage newImage = createImage(size, format,
+                                              usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                              mipmapped);
+
+        immediateSubmit([&](VkCommandBuffer cmd)
+        {
+            renderer_utils::transitionImage(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+            VkBufferImageCopy copyRegion = {
+                .bufferOffset = 0,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageExtent = size
+            };
+            copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copyRegion.imageSubresource.mipLevel = 0;
+            copyRegion.imageSubresource.baseArrayLayer = 0;
+            copyRegion.imageSubresource.layerCount = 1;
+
+            // copy the buffer into the image
+            vkCmdCopyBufferToImage(cmd, uploadbuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                   &copyRegion);
+
+            renderer_utils::transitionImage(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                            VK_IMAGE_LAYOUT_GENERAL);
+        });
+
+        destroyBuffer(uploadbuffer);
+
+        return newImage;
+    }
+
+    AllocatedImage Renderer::createCubemap(std::array<stbi_uc*, 6> data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage)
+    {
+        AllocatedImage newImage;
+        newImage.imageFormat = format;
+        newImage.imageExtent = size;
+
+        VkImageCreateInfo imgInfo = renderer_utils::imageCreateInfo(format,
+                                                                    usage |
+                                                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                                                                    , size, true);
+
+        VmaAllocationCreateInfo allocinfo = {};
+        allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+        allocinfo.requiredFlags = static_cast<VkMemoryPropertyFlags>(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VK_CHECK(vmaCreateImage(allocator_, &imgInfo, &allocinfo, &newImage.image, &newImage.allocation, nullptr),
+                 "Could not create image!");
+
+        VkImageViewCreateInfo viewInfo = renderer_utils::imageViewCreateInfo(
+            format, newImage.image, VK_IMAGE_ASPECT_COLOR_BIT, true);
+        VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &newImage.imageView), "Could not create image view!");
+
+
+        const size_t dataSize = size.width * size.height * 4 * 6;
+        AllocatedBuffer uploadbuffer = createBuffer(dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                    VMA_MEMORY_USAGE_CPU_TO_GPU);
+
+        const size_t layerSize = dataSize / 6;
+        for (int i = 0; i < 6; ++i)
+        {
+            memcpy(static_cast<char*>(uploadbuffer.info.pMappedData) + i * layerSize, data[i], layerSize);
+        }
+
+
+        immediateSubmit([&](VkCommandBuffer cmd)
+        {
+            renderer_utils::transitionCubemap(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+            VkBufferImageCopy copyRegion = {
+                .bufferOffset = 0,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageExtent = size
+            };
+            copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copyRegion.imageSubresource.mipLevel = 0;
+            copyRegion.imageSubresource.baseArrayLayer = 0;
+            copyRegion.imageSubresource.layerCount = 6;
+
+            // copy the buffer into the image
+            vkCmdCopyBufferToImage(cmd, uploadbuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                   &copyRegion);
+
+            renderer_utils::transitionCubemap(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                            VK_IMAGE_LAYOUT_GENERAL);
+        });
+
+        destroyBuffer(uploadbuffer);
+
+        return newImage;
+    }
+
+    void Renderer::destroyImage(const AllocatedImage& image)
+    {
+        vkDestroyImageView(device_, image.imageView, nullptr);
+        vmaDestroyImage(allocator_, image.image, image.allocation);
     }
 
 
@@ -806,21 +1027,26 @@ namespace renderer
         vkAcquireNextImageKHR(device_, swapchain_, 1000000000, getCurrentFrame().swapSemaphore, nullptr, &imageIndex);
 
         VkCommandBuffer cmd = getCurrentFrame().mainCommandBuffer;
-        vkResetCommandBuffer(cmd, 0);
+        VK_CHECK(vkResetCommandBuffer(cmd, 0), "");
 
         VkCommandBufferBeginInfo cmdBeginInfo = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
-
         VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo), "Could not begin command buffer!");
 
-        renderer_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-
-        // Draw the background
-        VkClearColorValue clearValue = {0.2f, 0.2f, 0.2f, 1.0f};
-        VkImageSubresourceRange clearRange = renderer_utils::getImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT);
-        vkCmdClearColorImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
+        if (frameNumber_ == 0)
+        {
+            renderer_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+            VkClearColorValue clearValue = {0.2f, 0.2f, 0.2f, 1.0f};
+            VkImageSubresourceRange clearRange = renderer_utils::getImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT);
+            vkCmdClearColorImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
+        }
+        else
+        {
+            renderer_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                            VK_IMAGE_LAYOUT_GENERAL);
+        }
 
         // Draw the compute result on the intermediate image
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ptPipeline_);
@@ -828,8 +1054,8 @@ namespace renderer
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ptPipelineLayout_, 0, 2,
                                 sets.data(), 0, nullptr);
         vkCmdPushConstants(cmd, ptPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TracePushConstants),
-                           &ptPushConstants);
-        vkCmdDispatch(cmd, std::ceil(swapchainExtent_.width / 16.0), std::ceil(swapchainExtent_.height / 16.0), 1);
+                           &ptPushConstants_);
+        vkCmdDispatch(cmd, std::ceil(swapchainExtent_.width / 8.0), std::ceil(swapchainExtent_.height / 8.0), 1);
 
         // Copy the drawing result onto the swap chain image
         renderer_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_GENERAL,
@@ -854,7 +1080,7 @@ namespace renderer
         VkSemaphoreSubmitInfo waitInfo = renderer_utils::semaphoreSubmitInfo(
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, getCurrentFrame().swapSemaphore);
         VkSemaphoreSubmitInfo signalInfo = renderer_utils::semaphoreSubmitInfo(
-            VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, getCurrentFrame().renderSemaphore);
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR, getCurrentFrame().renderSemaphore);
         VkCommandBufferSubmitInfo cmdInfo = renderer_utils::commandBufferSubmitInfo(cmd);
         VkSubmitInfo2 submitInfo = renderer_utils::submitInfo(&cmdInfo, &signalInfo, &waitInfo);
 
@@ -872,6 +1098,7 @@ namespace renderer
 
         VK_CHECK(vkQueuePresentKHR(queue_, &presentInfo), "Could not present");
         frameNumber_++;
+        ptPushConstants_.frame++;
     }
 
     void Renderer::immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function)
@@ -923,7 +1150,6 @@ namespace renderer
     {
         vkDeviceWaitIdle(device_);
         ImGui_ImplVulkan_Shutdown();
-        renderer_utils::destroyBuffer(allocator_, globalBuffer_);
         for (auto frame : frames_)
         {
             frame.deletionQueue.flush();
