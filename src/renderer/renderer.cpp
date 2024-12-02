@@ -17,7 +17,8 @@
 #include "utils/images.h"
 #include "utils/shaders.h"
 #include "utils/compatibility.h"
-#include "utils/create_infos.h"
+#include "utils/vk_infos.h"
+#include "path_tracing/trace_mesh.h"
 
 namespace renderer
 {
@@ -46,7 +47,7 @@ namespace renderer
     void Renderer::createInstance(GLFWwindow* window)
     {
 #ifdef ENABLE_VALIDATION_LAYERS
-        if (!renderer_utils::checkValidationLayerSupport())
+        if (!vk_utils::checkValidationLayerSupport())
         {
             throw std::runtime_error("Validation layers requested, but not available!");
         }
@@ -93,13 +94,13 @@ namespace renderer
         vkGetPhysicalDeviceProperties(device, &deviceProperties);
 
         const bool discrete = deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
-        const bool extensionsSupported = renderer_utils::checkDeviceExtensionSupport(device);
+        const bool extensionsSupported = vk_utils::checkDeviceExtensionSupport(device);
         findQueueFamily(device);
         const bool hasNecessaryQueueFamilies = queueFamily_.has_value();
         bool swapchainAdequate = false;
         if (extensionsSupported)
         {
-            renderer_utils::SwapchainSupportDetails swapchainSupport = renderer_utils::querySwapchainSupport(
+            vk_utils::SwapchainSupportDetails swapchainSupport = vk_utils::querySwapchainSupport(
                 device, surface_);
             swapchainAdequate = !swapchainSupport.formats.empty() && !swapchainSupport.presentModes.empty();
         }
@@ -174,7 +175,8 @@ namespace renderer
         VkPhysicalDeviceDescriptorIndexingFeatures indexFeatures = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
             .pNext = &bufferDeviceAddressFeature,
-            .descriptorBindingPartiallyBound = VK_TRUE
+            .descriptorBindingPartiallyBound = VK_TRUE,
+            .descriptorBindingVariableDescriptorCount = VK_TRUE
         };
         VkPhysicalDeviceDynamicRenderingFeatures dynRendFeature = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
@@ -271,7 +273,7 @@ namespace renderer
 
     void Renderer::createSwapchain(GLFWwindow* window)
     {
-        renderer_utils::SwapchainSupportDetails support = renderer_utils::querySwapchainSupport(
+        vk_utils::SwapchainSupportDetails support = vk_utils::querySwapchainSupport(
             physicalDevice_, surface_);
 
         VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(support.formats);
@@ -381,22 +383,22 @@ namespace renderer
             .magFilter = VK_FILTER_LINEAR,
             .minFilter = VK_FILTER_LINEAR
         };
-        vkCreateSampler(device_, &sampl, nullptr, &defaultNearestSampler_);
+        vkCreateSampler(device_, &sampl, nullptr, &defaultLinearSampler_);
 
         deletionQueue_.push_function([=]()
         {
             destroyBuffer(globalBuffer_);
-            vkDestroySampler(device_, defaultNearestSampler_, nullptr);
+            vkDestroySampler(device_, defaultLinearSampler_, nullptr);
         });
     }
 
     void Renderer::uploadSkybox(const std::string& skyboxDirectory)
     {
-        if(skybox_.image != VK_NULL_HANDLE)
+        if (skybox_.image != VK_NULL_HANDLE)
         {
             destroyImage(skybox_);
         }
-        std::array<std::string, 6> faces {
+        std::array<std::string, 6> faces{
             skyboxDirectory + "/px.png", // right
             skyboxDirectory + "/nx.png", // left
             skyboxDirectory + "/py.png", // top
@@ -409,16 +411,16 @@ namespace renderer
         std::array<stbi_uc*, 6> textureData{};
         for (int i = 0; i < faces.size(); i++)
         {
-            textureData[i] = renderer_utils::loadTextureData(faces[i], texSize);
+            textureData[i] = vk_utils::loadTextureData(faces[i], texSize);
         }
         skybox_ = createCubemap(textureData, texSize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
         for (int i = 0; i < faces.size(); i++)
         {
-            renderer_utils::freeImageData(textureData[i]);
+            vk_utils::freeImageData(textureData[i]);
         }
 
         VkDescriptorImageInfo skyboxInfo = {
-            .sampler = defaultNearestSampler_,
+            .sampler = defaultLinearSampler_,
             .imageView = skybox_.imageView,
             .imageLayout = VK_IMAGE_LAYOUT_GENERAL
         };
@@ -442,7 +444,7 @@ namespace renderer
     void Renderer::createGlobalDescriptors()
     {
         // Global descriptors
-        renderer_utils::DescriptorLayoutBuilder globalBuilder;
+        vk_utils::DescriptorLayoutBuilder globalBuilder;
         globalBuilder.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         globalBuilder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 
@@ -454,11 +456,11 @@ namespace renderer
         };
         globalDescLayout_ = globalBuilder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT, &bindingFlagsInfo);
 
-        std::vector<renderer_utils::DescriptorAllocator::PoolSizeRatio> sizes =
+        std::vector<vk_utils::DescriptorAllocator::PoolSizeRatio> sizes =
         {
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10},
         };
         globalDescriptorAllocator_.initPool(device_, 10, sizes);
         globalDescriptors_ = globalDescriptorAllocator_.allocate(device_, globalDescLayout_);
@@ -488,10 +490,28 @@ namespace renderer
 
     void Renderer::createPathTracingDescriptors()
     {
-        renderer_utils::DescriptorLayoutBuilder ptBuilder;
+        vk_utils::DescriptorLayoutBuilder ptBuilder;
         ptBuilder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-        ptDescLayout_ = ptBuilder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT);
-        ptDescriptors_ = globalDescriptorAllocator_.allocate(device_, ptDescLayout_);
+        ptBuilder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20);
+
+        VkDescriptorBindingFlags bindingFlgas[2] = {
+            0, VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
+        };
+        VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+            .bindingCount = 2,
+            .pBindingFlags = bindingFlgas
+        };
+        ptDescLayout_ = ptBuilder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT, &bindingFlagsInfo);
+
+        const uint32_t maxTextureDescCount = 20;
+        VkDescriptorSetVariableDescriptorCountAllocateInfo texturesVariableInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+            .descriptorSetCount = 1,
+            .pDescriptorCounts = &maxTextureDescCount
+        };
+
+        ptDescriptors_ = globalDescriptorAllocator_.allocate(device_, ptDescLayout_, &texturesVariableInfo);
 
         VkDescriptorImageInfo imgInfo = {
             .imageView = drawImage_.imageView,
@@ -516,8 +536,8 @@ namespace renderer
 
     void Renderer::createPathTracingPipeline()
     {
-        auto compShaderCode = renderer_utils::readFile("./shaders/path_tracing.comp.spv");
-        auto compModule = renderer_utils::createShaderModule(device_, compShaderCode);
+        auto compShaderCode = vk_utils::readFile("./shaders/path_tracing.comp.spv");
+        auto compModule = vk_utils::createShaderModule(device_, compShaderCode);
 
         VkPipelineShaderStageCreateInfo computeShaderStageInfo = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -530,7 +550,7 @@ namespace renderer
         VkPushConstantRange constantRange = {
             .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
             .offset = 0,
-            .size = sizeof(TracePushConstants)
+            .size = sizeof(path_tracing::PushConstants)
         };
 
         VkPipelineLayoutCreateInfo computePipelineLayoutInfo{
@@ -723,22 +743,37 @@ namespace renderer
         ptPushConstants_.frame = 0;
     }
 
-    void Renderer::uploadPathTracingScene(const std::vector<core::TraceMesh>& scene)
+    void Renderer::uploadPathTracingScene(const std::vector<path_tracing::Mesh>& scene)
     {
         // Aggregate scene data to build global buffers
         std::vector<core::Vertex> vertices;
-        std::vector<core::TraceTriangle> triangles;
-        std::vector<core::TraceBVHNode> nodes;
-        std::vector<core::TraceMaterial> materials;
-        std::vector<TraceMeshInfo> meshInfos;
+        std::vector<path_tracing::Triangle> triangles;
+        std::vector<path_tracing::BVHNode> nodes;
+        std::vector<path_tracing::GPUMaterial> materials;
+        std::vector<path_tracing::MeshInfo> meshInfos;
 
-        TraceMeshInfo offsets{};
+        std::unordered_map<std::string, int> textures;
+        int currentTexIndex = -1;
+
+        path_tracing::MeshInfo offsets{};
+
         for (const auto& mesh : scene)
         {
             vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
             triangles.insert(triangles.end(), mesh.triangles.begin(), mesh.triangles.end());
             nodes.insert(nodes.end(), mesh.nodes.begin(), mesh.nodes.end());
-            materials.push_back(mesh.material);
+
+            path_tracing::GPUMaterial m = {
+                .baseCol = mesh.material.color,
+                .baseColMapIndex = path_tracing::handleMapProperty(mesh.material.colorMap, textures, currentTexIndex),
+                .emissiveStrength = mesh.material.emissiveStrength,
+                .roughness = mesh.material.roughness,
+                .roughnessMapIndex = path_tracing::handleMapProperty(mesh.material.roughnessMap, textures, currentTexIndex),
+                .metallic = mesh.material.metallic,
+                .metallicMapIndex = path_tracing::handleMapProperty(mesh.material.metallicMap, textures, currentTexIndex),
+
+            };
+            materials.push_back(m);
             meshInfos.push_back(offsets);
 
             offsets.vertexOffset += mesh.vertices.size();
@@ -749,13 +784,12 @@ namespace renderer
 
         // Calculate buffer sizes
         const size_t vertexBufferSize = vertices.size() * sizeof(core::Vertex);
-        const size_t triangleBufferSize = triangles.size() * sizeof(core::TraceTriangle);
-        const size_t nodeBufferSize = nodes.size() * sizeof(core::TraceBVHNode);
-        const size_t materialBufferSize = materials.size() * sizeof(core::TraceMaterial);
-        const size_t meshInfoBufferSize = meshInfos.size() * sizeof(TraceMeshInfo);
+        const size_t triangleBufferSize = triangles.size() * sizeof(path_tracing::Triangle);
+        const size_t nodeBufferSize = nodes.size() * sizeof(path_tracing::BVHNode);
+        const size_t materialBufferSize = materials.size() * sizeof(path_tracing::GPUMaterial);
+        const size_t meshInfoBufferSize = meshInfos.size() * sizeof(path_tracing::MeshInfo);
 
-        VkBufferDeviceAddressInfo deviceAdressInfo = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-        TraceSceneBuffers newScene;
+        path_tracing::SceneBuffers newScene;
 
         // Helper to create GPU buffer and retrieve address
         auto createGPUBuffer = [&](size_t size, void* data, AllocatedBuffer& buffer, VkDeviceAddress& address)
@@ -830,8 +864,13 @@ namespace renderer
             static_cast<uint32_t>(scene.size()),
             0
         };
-
         destroyBuffer(staging);
+
+        std::vector<std::string> texVecor;
+        for(auto& tex: textures)
+            texVecor.push_back(tex.first);
+        uploadTextures(texVecor);
+
         deletionQueue_.push_function([&]()
         {
             destroyBuffer(ptScene_.vertexBuffer);
@@ -840,6 +879,36 @@ namespace renderer
             destroyBuffer(ptScene_.materialBuffer);
             destroyBuffer(ptScene_.meshInfoBuffer);
         });
+    }
+
+    void Renderer::uploadTextures(const std::vector<std::string>& texturePaths)
+    {
+        std::vector<VkDescriptorImageInfo> texturesInfo;
+        std::vector<AllocatedImage> images;
+        for (auto& path : texturePaths)
+        {
+            VkExtent3D texSize = {1, 1, 1};
+            stbi_uc* data = vk_utils::loadTextureData(path, texSize);
+
+            images.push_back(createImage(data, texSize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT,
+                                             false));
+
+            texturesInfo.emplace_back(defaultLinearSampler_, images.back().imageView, VK_IMAGE_LAYOUT_GENERAL);
+        }
+        VkWriteDescriptorSet write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = ptDescriptors_,
+            .dstBinding = 1,
+            .descriptorCount = static_cast<uint32_t>(texturesInfo.size()),
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = texturesInfo.data()
+        };
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+
+        for(auto& img: images)
+        {
+            destroyImage(img);
+        }
     }
 
 
@@ -856,7 +925,7 @@ namespace renderer
             .usage = memoryUsage,
         };
 
-        renderer::AllocatedBuffer newBuffer;
+        AllocatedBuffer newBuffer;
         VK_CHECK(vmaCreateBuffer(allocator_, &bufferInfo, &vmaallocInfo, &newBuffer.buffer, &newBuffer.allocation,
                      &newBuffer.info), "Could not create buffer!");
 
@@ -874,7 +943,7 @@ namespace renderer
         newImage.imageFormat = format;
         newImage.imageExtent = size;
 
-        VkImageCreateInfo imgInfo = renderer_utils::imageCreateInfo(format, usage, size);
+        VkImageCreateInfo imgInfo = vk_utils::imageCreateInfo(format, usage, size);
         if (mipmapped)
         {
             imgInfo.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(size.width, size.height)))) + 1;
@@ -898,7 +967,7 @@ namespace renderer
         }
 
         // build a image-view for the image
-        VkImageViewCreateInfo viewInfo = renderer_utils::imageViewCreateInfo(format, newImage.image, aspectFlag);
+        VkImageViewCreateInfo viewInfo = vk_utils::imageViewCreateInfo(format, newImage.image, aspectFlag);
         viewInfo.subresourceRange.levelCount = imgInfo.mipLevels;
 
         VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &newImage.imageView), "Could not create image view!");
@@ -906,7 +975,7 @@ namespace renderer
         return newImage;
     }
 
-    AllocatedImage Renderer::createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage,
+    AllocatedImage Renderer::createImage(stbi_uc* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage,
                                          bool mipmapped)
     {
         size_t dataSize = size.depth * size.width * size.height * 4;
@@ -921,7 +990,7 @@ namespace renderer
 
         immediateSubmit([&](VkCommandBuffer cmd)
         {
-            renderer_utils::transitionImage(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED,
+            vk_utils::transitionImage(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED,
                                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
             VkBufferImageCopy copyRegion = {
@@ -939,7 +1008,7 @@ namespace renderer
             vkCmdCopyBufferToImage(cmd, uploadbuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                    &copyRegion);
 
-            renderer_utils::transitionImage(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            vk_utils::transitionImage(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                             VK_IMAGE_LAYOUT_GENERAL);
         });
 
@@ -948,13 +1017,14 @@ namespace renderer
         return newImage;
     }
 
-    AllocatedImage Renderer::createCubemap(std::array<stbi_uc*, 6> data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage)
+    AllocatedImage Renderer::createCubemap(std::array<stbi_uc*, 6> data, VkExtent3D size, VkFormat format,
+                                           VkImageUsageFlags usage)
     {
         AllocatedImage newImage;
         newImage.imageFormat = format;
         newImage.imageExtent = size;
 
-        VkImageCreateInfo imgInfo = renderer_utils::imageCreateInfo(format,
+        VkImageCreateInfo imgInfo = vk_utils::imageCreateInfo(format,
                                                                     usage |
                                                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT
@@ -966,7 +1036,7 @@ namespace renderer
         VK_CHECK(vmaCreateImage(allocator_, &imgInfo, &allocinfo, &newImage.image, &newImage.allocation, nullptr),
                  "Could not create image!");
 
-        VkImageViewCreateInfo viewInfo = renderer_utils::imageViewCreateInfo(
+        VkImageViewCreateInfo viewInfo = vk_utils::imageViewCreateInfo(
             format, newImage.image, VK_IMAGE_ASPECT_COLOR_BIT, true);
         VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &newImage.imageView), "Could not create image view!");
 
@@ -984,8 +1054,8 @@ namespace renderer
 
         immediateSubmit([&](VkCommandBuffer cmd)
         {
-            renderer_utils::transitionCubemap(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED,
-                                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            vk_utils::transitionCubemap(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
             VkBufferImageCopy copyRegion = {
                 .bufferOffset = 0,
@@ -1002,8 +1072,8 @@ namespace renderer
             vkCmdCopyBufferToImage(cmd, uploadbuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                    &copyRegion);
 
-            renderer_utils::transitionCubemap(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                            VK_IMAGE_LAYOUT_GENERAL);
+            vk_utils::transitionCubemap(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                              VK_IMAGE_LAYOUT_GENERAL);
         });
 
         destroyBuffer(uploadbuffer);
@@ -1037,14 +1107,14 @@ namespace renderer
 
         if (frameNumber_ == 0)
         {
-            renderer_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-            VkClearColorValue clearValue = {0.2f, 0.2f, 0.2f, 1.0f};
-            VkImageSubresourceRange clearRange = renderer_utils::getImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT);
+            vk_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+            VkClearColorValue clearValue = {0.0f, 0.0f, 0.0f, 1.0f};
+            VkImageSubresourceRange clearRange = vk_utils::getImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT);
             vkCmdClearColorImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
         }
         else
         {
-            renderer_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            vk_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                             VK_IMAGE_LAYOUT_GENERAL);
         }
 
@@ -1053,36 +1123,36 @@ namespace renderer
         std::vector<VkDescriptorSet> sets = {globalDescriptors_, ptDescriptors_};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ptPipelineLayout_, 0, 2,
                                 sets.data(), 0, nullptr);
-        vkCmdPushConstants(cmd, ptPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TracePushConstants),
+        vkCmdPushConstants(cmd, ptPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(path_tracing::PushConstants),
                            &ptPushConstants_);
         vkCmdDispatch(cmd, std::ceil(swapchainExtent_.width / 8.0), std::ceil(swapchainExtent_.height / 8.0), 1);
 
         // Copy the drawing result onto the swap chain image
-        renderer_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_GENERAL,
+        vk_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_GENERAL,
                                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        renderer_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED,
+        vk_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED,
                                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-        renderer_utils::copyImageToImage(cmd, drawImage_.image, swapchainImages_[imageIndex], swapchainExtent_,
+        vk_utils::copyImageToImage(cmd, drawImage_.image, swapchainImages_[imageIndex], swapchainExtent_,
                                          swapchainExtent_);
 
         // Transition to draw gui onto swap chain image
-        renderer_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        vk_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                         VK_IMAGE_LAYOUT_GENERAL);
         drawImgui(cmd, swapchainImageViews_[imageIndex]);
 
         // Transition to present
-        renderer_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_GENERAL,
+        vk_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_GENERAL,
                                         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
         VK_CHECK(vkEndCommandBuffer(cmd), "Could not record command buffer!");
 
-        VkSemaphoreSubmitInfo waitInfo = renderer_utils::semaphoreSubmitInfo(
+        VkSemaphoreSubmitInfo waitInfo = vk_utils::semaphoreSubmitInfo(
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, getCurrentFrame().swapSemaphore);
-        VkSemaphoreSubmitInfo signalInfo = renderer_utils::semaphoreSubmitInfo(
+        VkSemaphoreSubmitInfo signalInfo = vk_utils::semaphoreSubmitInfo(
             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR, getCurrentFrame().renderSemaphore);
-        VkCommandBufferSubmitInfo cmdInfo = renderer_utils::commandBufferSubmitInfo(cmd);
-        VkSubmitInfo2 submitInfo = renderer_utils::submitInfo(&cmdInfo, &signalInfo, &waitInfo);
+        VkCommandBufferSubmitInfo cmdInfo = vk_utils::commandBufferSubmitInfo(cmd);
+        VkSubmitInfo2 submitInfo = vk_utils::submitInfo(&cmdInfo, &signalInfo, &waitInfo);
 
         VK_CHECK(vkQueueSubmit2(queue_, 1, &submitInfo, getCurrentFrame().renderFence),
                  "Could not submit queue!");
@@ -1117,8 +1187,8 @@ namespace renderer
         function(cmd);
         VK_CHECK(vkEndCommandBuffer(cmd), "");
 
-        VkCommandBufferSubmitInfo cmdinfo = renderer_utils::commandBufferSubmitInfo(cmd);
-        VkSubmitInfo2 submit = renderer_utils::submitInfo(&cmdinfo, nullptr, nullptr);
+        VkCommandBufferSubmitInfo cmdinfo = vk_utils::commandBufferSubmitInfo(cmd);
+        VkSubmitInfo2 submit = vk_utils::submitInfo(&cmdinfo, nullptr, nullptr);
 
         // submit command buffer to the queue and execute it.
         // the fence will now block until the function commands finish execution
@@ -1128,9 +1198,9 @@ namespace renderer
 
     void Renderer::drawImgui(VkCommandBuffer cmd, VkImageView targetImageView)
     {
-        VkRenderingAttachmentInfo colorAttachment = renderer_utils::attachmentInfo(
+        VkRenderingAttachmentInfo colorAttachment = vk_utils::attachmentInfo(
             targetImageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        VkRenderingInfo renderInfo = renderer_utils::renderingInfo(swapchainExtent_, &colorAttachment, nullptr);
+        VkRenderingInfo renderInfo = vk_utils::renderingInfo(swapchainExtent_, &colorAttachment, nullptr);
 
         vkCmdBeginRendering(cmd, &renderInfo);
 

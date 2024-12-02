@@ -8,7 +8,7 @@
 namespace core_utils
 {
     void loadTraceableGeometryFromObj(const std::string& objPath,
-        std::vector<core::Vertex>& vertices, std::vector<core::TraceTriangle>& triangles)
+        std::vector<core::Vertex>& vertices, std::vector<path_tracing::Triangle>& triangles)
     {
         tinyobj::ObjReaderConfig reader_config;
         reader_config.mtl_search_path = "../resources/objects";
@@ -36,7 +36,7 @@ namespace core_utils
             size_t indexOffset = 0;
             for (size_t tI = 0; tI < shape.mesh.num_face_vertices.size(); tI++)
             {
-                core::TraceTriangle triangle{};
+                path_tracing::Triangle triangle{};
                 for (size_t vI = 0; vI < 3; vI++)
                 {
                     tinyobj::index_t index = shape.mesh.indices[indexOffset + vI];

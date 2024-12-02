@@ -20,14 +20,15 @@ namespace renderer
         void init(GLFWwindow* window);
         void newImGuiFrame();
         void render(const core::Camera& camera);
-        void uploadPathTracingScene(const std::vector<core::TraceMesh>& scene);
+        void uploadPathTracingScene(const std::vector<path_tracing::Mesh>& scene);
+        void uploadTextures(const std::vector<std::string>& texturePaths);
         void uploadSkybox(const std::string& skyboxPath);
         void resetAccumulation();
         void toggleSkyboxUse();
         void toggleSkyboxVisibility();
         void cleanup();
 
-        TracePushConstants ptPushConstants_{};
+        path_tracing::PushConstants ptPushConstants_{};
 
     private:
         void initVulkan(GLFWwindow* window);
@@ -53,7 +54,7 @@ namespace renderer
         AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
         void destroyBuffer(const AllocatedBuffer& buffer);
         AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped);
-        AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped);
+        AllocatedImage createImage(stbi_uc* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped);
         AllocatedImage createCubemap(std::array<stbi_uc*, 6> data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage);
         void destroyImage(const AllocatedImage& image);
         void draw();
@@ -69,9 +70,9 @@ namespace renderer
         VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 
         VmaAllocator allocator_{};
-        renderer_utils::DescriptorAllocator globalDescriptorAllocator_{};
+        vk_utils::DescriptorAllocator globalDescriptorAllocator_{};
         AllocatedImage skybox_;
-        VkSampler defaultNearestSampler_ = VK_NULL_HANDLE;
+        VkSampler defaultLinearSampler_ = VK_NULL_HANDLE;
 
         VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
         std::vector<VkImage> swapchainImages_;
@@ -89,7 +90,7 @@ namespace renderer
         VkDescriptorSet ptDescriptors_ = VK_NULL_HANDLE;
         VkPipeline ptPipeline_ = VK_NULL_HANDLE;
         VkPipelineLayout ptPipelineLayout_ = VK_NULL_HANDLE;
-        TraceSceneBuffers ptScene_;
+        path_tracing::SceneBuffers ptScene_;
 
         ImmediateHandles immediateHandles_;
         DeletionQueue deletionQueue_;

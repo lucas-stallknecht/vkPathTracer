@@ -3,7 +3,7 @@
 #include <string>
 #include <stb_image.h>
 
-namespace renderer_utils
+namespace vk_utils
 {
     VkImageSubresourceRange getImageSubresourceRange(VkImageAspectFlags aspectMask);
     void transitionImage(VkCommandBuffer cmd, VkImage image, VkImageLayout currentLayout, VkImageLayout newLayout);

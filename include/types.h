@@ -6,49 +6,17 @@
 #include <functional>
 #include <optional>
 #include <glm/glm.hpp>
+#include <string>
 
 namespace core
 {
-    struct Vertex {
+    struct Vertex
+    {
         glm::vec3 position;
         float uv1;
         glm::vec3 normal;
         float uv2;
     }; // 32 bytes
-
-    struct TraceTriangle
-    {
-        uint32_t v0;
-        uint32_t v1;
-        uint32_t v2;
-        float padding1;
-        glm::vec3 centroid;
-        float padding2;
-    }; // 32 bytes
-
-    struct TraceMaterial
-    {
-        glm::vec3 diffuseCol;
-        float emissiveStrength;
-        float roughness;
-        float metallic;
-        glm::vec2 padding;
-    }; // 32 bytes
-
-    struct TraceBVHNode {
-        glm::vec3 aabbMin;
-        uint32_t triangleCount;
-        glm::vec3 aabbMax;
-        uint32_t index; // triangleIndex if leaf node, otherwise childIndex
-    }; // 32 bytes
-
-    struct TraceMesh
-    {
-        std::vector<Vertex> vertices;
-        std::vector<TraceTriangle> triangles;
-        TraceMaterial material;
-        std::vector<TraceBVHNode> nodes;
-    };
 }
 
 namespace renderer
@@ -57,13 +25,16 @@ namespace renderer
     {
         std::deque<std::function<void()>> deletors;
 
-        void push_function(std::function<void()>&& function) {
+        void push_function(std::function<void()>&& function)
+        {
             deletors.push_back(function);
         }
 
-        void flush() {
+        void flush()
+        {
             // reverse iterate the deletion queue to execute all the functions
-            for (auto it = deletors.rbegin(); it != deletors.rend(); it++) {
+            for (auto it = deletors.rbegin(); it != deletors.rend(); it++)
+            {
                 (*it)(); //call the function
             }
 
@@ -88,7 +59,8 @@ namespace renderer
         VkFence fence = VK_NULL_HANDLE;
     };
 
-    struct AllocatedImage {
+    struct AllocatedImage
+    {
         VkImage image = VK_NULL_HANDLE;
         VkImageView imageView = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
@@ -96,7 +68,8 @@ namespace renderer
         VkFormat imageFormat = VK_FORMAT_UNDEFINED;
     };
 
-    struct AllocatedBuffer {
+    struct AllocatedBuffer
+    {
         VkBuffer buffer = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
         VmaAllocationInfo info{};
@@ -109,22 +82,74 @@ namespace renderer
         glm::mat4 invView;
         glm::mat4 invProj;
     };
+}
 
-    struct TraceSceneBuffers
+namespace path_tracing
+{
+    struct Triangle
     {
-        AllocatedBuffer vertexBuffer{};
+        uint32_t v0;
+        uint32_t v1;
+        uint32_t v2;
+        float padding1;
+        glm::vec3 centroid;
+        float padding2;
+    }; // 32 bytes
+
+    struct MaterialProperties {
+        glm::vec3 color = glm::vec3(1.0f);
+        float emissiveStrength = 0.0f;
+        float roughness = 0.5f;
+        float metallic = 0.0f;
+        std::optional<std::string> colorMap;
+        std::optional<std::string> roughnessMap;
+        std::optional<std::string> metallicMap;
+    };
+
+    struct GPUMaterial
+    {
+        glm::vec3 baseCol;
+        int baseColMapIndex = -1;
+        float emissiveStrength;
+        int emissiveMapIndex = -1;
+        float roughness;
+        int roughnessMapIndex = -1;
+        float metallic;
+        int metallicMapIndex = -1;
+        glm::vec2 padding;
+    }; // 48 bytes
+
+    struct BVHNode
+    {
+        glm::vec3 aabbMin;
+        uint32_t triangleCount;
+        glm::vec3 aabbMax;
+        uint32_t index; // triangleIndex if leaf node, otherwise childIndex
+    }; // 32 bytes
+
+    struct Mesh
+    {
+        std::vector<core::Vertex> vertices;
+        std::vector<Triangle> triangles;
+        MaterialProperties material;
+        std::vector<BVHNode> nodes;
+    };
+
+    struct SceneBuffers
+    {
+        renderer::AllocatedBuffer vertexBuffer{};
         VkDeviceAddress vertexBufferAddress = 0;
-        AllocatedBuffer triangleBuffer{};
+        renderer::AllocatedBuffer triangleBuffer{};
         VkDeviceAddress triangleBufferAddress = 0;
-        AllocatedBuffer materialBuffer{};
+        renderer::AllocatedBuffer materialBuffer{};
         VkDeviceAddress materialBufferAddress = 0;
-        AllocatedBuffer nodeBuffer{};
+        renderer::AllocatedBuffer nodeBuffer{};
         VkDeviceAddress nodeBufferAddress = 0;
-        AllocatedBuffer meshInfoBuffer{};
+        renderer::AllocatedBuffer meshInfoBuffer{};
         VkDeviceAddress meshInfoBufferAddress = 0;
     };
 
-    struct TraceMeshInfo
+    struct MeshInfo
     {
         uint32_t vertexOffset = 0;
         uint32_t triangleOffset = 0;
@@ -132,7 +157,8 @@ namespace renderer
         uint32_t materialIndex = 0;
     };
 
-    struct TracePushConstants {
+    struct PushConstants
+    {
         VkDeviceAddress vertexBuffer;
         VkDeviceAddress triangleBuffer;
         VkDeviceAddress nodeBuffer;
@@ -144,5 +170,3 @@ namespace renderer
         uint32_t skyboxVisible;
     };
 }
-
-

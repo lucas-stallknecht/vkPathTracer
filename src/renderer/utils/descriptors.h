@@ -4,13 +4,13 @@
 #include <vector>
 #include <span>
 
-namespace renderer_utils
+namespace vk_utils
 {
     struct DescriptorLayoutBuilder
     {
         std::vector<VkDescriptorSetLayoutBinding> bindings;
 
-        void addBinding(uint32_t binding, VkDescriptorType type);
+        void addBinding(uint32_t binding, VkDescriptorType type, uint32_t descriptorCount = 1);
         void clear();
         VkDescriptorSetLayout build(VkDevice device, VkShaderStageFlags shaderStages, void* pNext = nullptr,
                                     VkDescriptorSetLayoutCreateFlags flags = 0);
@@ -30,6 +30,6 @@ namespace renderer_utils
         void clearDescriptors(VkDevice device);
         void destroyPool(VkDevice device);
 
-        VkDescriptorSet allocate(VkDevice device, VkDescriptorSetLayout layout);
+        VkDescriptorSet allocate(VkDevice device, VkDescriptorSetLayout layout, void* pNext = nullptr);
     };
 }

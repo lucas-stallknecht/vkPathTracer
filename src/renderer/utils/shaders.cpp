@@ -2,7 +2,7 @@
 
 #include <fstream>
 
-namespace renderer_utils
+namespace vk_utils
 {
     std::vector<char> readFile(const std::string& filename)
     {

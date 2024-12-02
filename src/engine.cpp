@@ -1,6 +1,6 @@
 #include "engine.h"
 
-#include <core/utils/trace_mesh.h>
+#include "path_tracing/trace_mesh.h"
 
 namespace engine
 {
@@ -12,14 +12,21 @@ namespace engine
 
         camera_.position = glm::vec3(0.0, 0.0, 1.5);
 
-        core_utils::TraceMeshBuilder builder;
+        path_tracing::TraceMeshBuilder builder;
         builder.setGeometry("./assets/models/grenade.obj");
-        builder.setMaterial(glm::vec3(0.850743, 0.463014, 0.359456), 0.0, 0.7, 0.0);
-        core::TraceMesh grenade = builder.build(10);
-        builder.setGeometry("./assets/models/top_light.obj");
-        builder.setMaterial(glm::vec3(1.0, 1.0, 1.0), 1.0, 1.0, 0.0);
-        core::TraceMesh topLight = builder.build();
-        const std::vector<core::TraceMesh> scene = {grenade, topLight};
+        builder.setMaterial({
+            .colorMap =  "./assets/textures/grenade_basecolor.png",
+            .roughnessMap = "./assets/textures/grenade_roughness.png",
+            .metallicMap = "./assets/textures/grenade_metallic.png"
+        });
+        path_tracing::Mesh grenade = builder.build(10);
+        // builder.setGeometry("./assets/models/dragon.obj");
+        // builder.setMaterial({
+        //     .color = glm::vec3(0.850743, 0.463014, 0.359456),
+        //     .roughness = 0.7
+        // });
+        // path_tracing::Mesh dragon = builder.build(32);
+        const std::vector<path_tracing::Mesh> scene = {grenade};
         renderer_.uploadPathTracingScene(scene);
         renderer_.uploadSkybox("./assets/skyboxes/paris");
     }

@@ -4,7 +4,7 @@
 
 #include <vector>
 
-namespace renderer_utils
+namespace vk_utils
 {
     struct SwapchainSupportDetails
     {

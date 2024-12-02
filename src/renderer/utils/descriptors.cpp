@@ -2,14 +2,14 @@
 
 #include <stdexcept>
 
-namespace renderer_utils
+namespace vk_utils
 {
-    void DescriptorLayoutBuilder::addBinding(uint32_t binding, VkDescriptorType type)
+    void DescriptorLayoutBuilder::addBinding(uint32_t binding, VkDescriptorType type, uint32_t descriptorCount)
     {
         VkDescriptorSetLayoutBinding newbind{
             .binding = binding,
             .descriptorType = type,
-            .descriptorCount = 1,
+            .descriptorCount = descriptorCount,
         };
         bindings.push_back(newbind);
     }
@@ -76,10 +76,11 @@ namespace renderer_utils
         vkDestroyDescriptorPool(device, pool, nullptr);
     }
 
-    VkDescriptorSet DescriptorAllocator::allocate(VkDevice device, VkDescriptorSetLayout layout)
+    VkDescriptorSet DescriptorAllocator::allocate(VkDevice device, VkDescriptorSetLayout layout, void* pNext)
     {
         VkDescriptorSetAllocateInfo allocInfo = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .pNext = pNext,
             .descriptorPool = pool,
             .descriptorSetCount = 1,
             .pSetLayouts = &layout,

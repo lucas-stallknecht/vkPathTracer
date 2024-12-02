@@ -3,7 +3,7 @@
 #include <iostream>
 
 
-namespace renderer_utils
+namespace vk_utils
 {
     VkImageSubresourceRange getImageSubresourceRange(VkImageAspectFlags aspectMask)
     {
@@ -132,4 +132,4 @@ namespace renderer_utils
     {
         stbi_image_free(data);
     }
-} // renderer_utils
+} // vk_utils

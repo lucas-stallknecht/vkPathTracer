@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <fstream>
 
-namespace renderer_utils
+namespace vk_utils
 {
     bool checkValidationLayerSupport()
     {

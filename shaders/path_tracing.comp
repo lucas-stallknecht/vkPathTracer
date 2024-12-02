@@ -1,5 +1,6 @@
 #version 460
 #extension GL_EXT_buffer_reference: require
+#extension GL_EXT_nonuniform_qualifier: require
 
 struct Vertex {
     vec3 pos;
@@ -17,10 +18,14 @@ struct Triangle {
 };
 
 struct Material {
-    vec3 diffuseCol;
+    vec3 baseCol;
+    int baseColMapIndex;
     float emissiveStrength;
+    int emissiveMapIndex;
     float roughness;
+    int roughnessMapIndex;
     float metallic;
+    int metallicMapIndex;
 };
 
 struct Node {
@@ -65,10 +70,11 @@ layout (set = 0, binding = 0) uniform globalBuffer {
     Camera cam;
 };
 layout (set = 0, binding = 1) uniform samplerCube skybox;
-layout (rgba32f, set = 1, binding = 0) uniform image2D image;
+layout (rgba32f, set = 1, binding = 0) uniform image2D drawImage;
+layout (set = 1, binding = 1) uniform sampler2D textures[1];
 layout (buffer_reference, std430) readonly buffer VertexBuffer {
     Vertex vertices[];
-};
+} vertices;
 layout (buffer_reference, std430) readonly buffer TriangleBuffer {
     Triangle triangles[];
 };
@@ -96,6 +102,9 @@ layout (push_constant) uniform constants
 
 
 #define PI 3.14159265359f
+#define JITTER_CONSTANT 0.00002
+#define GAMMA 2.2
+#define INV_GAMMA 1.0 / GAMMA
 const uint BOUNCES = 5;
 
 // ========= RANDOM FUNCTIONS =========
@@ -171,7 +180,6 @@ HitInfo rayTriangleIntersect(Ray ray, Triangle tri, uint vertexOffset) {
 }
 // ====================================
 
-// ====================================
 vec3 calculateBarycentric(vec3 pos, vec3 a, vec3 b, vec3 c)
 {
     vec3 v0 = b - a; vec3 v1 = c - a; vec3 v2 = pos - a;
@@ -187,7 +195,6 @@ vec3 calculateBarycentric(vec3 pos, vec3 a, vec3 b, vec3 c)
     bar.x = 1.0f - bar.y - bar.z;
     return bar;
 }
-// ====================================
 
 HitInfo intersect(Ray ray) {
     HitInfo hi;
@@ -243,22 +250,31 @@ vec3 trace(Ray ray, inout uint seed) {
 
             if(PushConstants.useSkybox == 1) {
                 vec3 skyColor = texture(skybox, ray.rd).rgb;
-                pixelColor += skyColor * 3.0 * rayCol * clamp(i, PushConstants.skyboxVisbility, 1);
+                pixelColor += skyColor * 8.0 * rayCol * clamp(i, PushConstants.skyboxVisbility, 1);
             }
             break;
         }
-        vec3 albedo = hi.material.diffuseCol;
+        vec3 albedo = hi.material.baseCol;
+        float roughness = hi.material.roughness;
+        float metallic = hi.material.metallic;
 
-        // Texture mapping tests
-//        Triangle tri = PushConstants.triangleBuffer.triangles[hi.triIndex];
-//        Vertex v0 = PushConstants.vertexBuffer.vertices[tri.v0];
-//        Vertex v1 = PushConstants.vertexBuffer.vertices[tri.v1];
-//        Vertex v2 = PushConstants.vertexBuffer.vertices[tri.v2];
-//        vec3 bar = calculateBarycentric(hi.pos, v0.pos, v1.pos, v2.pos);
-//        hi.normal = bar.x * tri.v0.normal + bar.y * tri.v1.normal + bar.z * tri.v2.normal;
-//        vec2 uv = bar.x * vec2(v0.uv1, v0.uv2) + bar.y * vec2(v1.uv1, v1.uv2) + bar.z * vec2(v2.uv1, v2.uv2);
-//        albedo = texture(billy, uv).rgb;
+        Triangle tri = PushConstants.triangleBuffer.triangles[hi.triIndex];
+        Vertex v0 = PushConstants.vertexBuffer.vertices[tri.v0];
+        Vertex v1 = PushConstants.vertexBuffer.vertices[tri.v1];
+        Vertex v2 = PushConstants.vertexBuffer.vertices[tri.v2];
+        vec3 bar = calculateBarycentric(hi.pos, v0.pos, v1.pos, v2.pos);
+        hi.normal =  bar.x * v0.normal + bar.y * v1.normal + bar.z * v2.normal;
+        vec2 uv = bar.x * vec2(v0.uv1, 1.0 - v0.uv2) + bar.y * vec2(v1.uv1,  1.0 - v1.uv2) + bar.z * vec2(v2.uv1,  1.0 - v2.uv2);
 
+        if(hi.material.baseColMapIndex > -1) {
+            albedo = texture(textures[hi.material.baseColMapIndex], uv).rgb;
+        }
+        if(hi.material.roughnessMapIndex > -1) {
+            roughness = texture(textures[hi.material.roughnessMapIndex], uv).r;
+        }
+        if(hi.material.metallicMapIndex > -1) {
+            metallic = texture(textures[hi.material.metallicMapIndex], uv).r;
+        }
 
         // we assumed that emissiveCol is the same as diffuseCol for the emissive objects (1 less mat component to share)
         //                    emitted light                                 the incomming light will be tinted by all the objects
@@ -274,10 +290,10 @@ vec3 trace(Ray ray, inout uint seed) {
         // instead of following the specular direction
         vec3 diffuseDir = normalize(hi.normal + randomUnitVector(seed));
         vec3 specularReflectionDir = reflect(ray.rd, hi.normal);
-        specularReflectionDir = normalize(mix(specularReflectionDir, diffuseDir, hi.material.roughness));
+        specularReflectionDir = normalize(mix(specularReflectionDir, diffuseDir, roughness));
 
         // the less metallic the component is, the less specular reflection there will be
-        float shouldSpecular = (randomFloat01(seed) < hi.material.metallic) ? 1.0f : 0.0f;
+        float shouldSpecular = (randomFloat01(seed) < metallic) ? 1.0f : 0.0f;
         newRay.rd = normalize(mix(diffuseDir, specularReflectionDir, shouldSpecular));
 
         // early stoppage
@@ -288,7 +304,6 @@ vec3 trace(Ray ray, inout uint seed) {
         }
         // Add the energy we 'lose' by randomly terminating paths
         rayCol *= 1.0f / p;
-
 
         ray = newRay;
     }
@@ -303,7 +318,7 @@ void main()
     vec2 uv = 2.0 * (vec2(texelCoord) / (gl_WorkGroupSize.xy * gl_NumWorkGroups.xy)) - 1.0;
     uv.y *= -1.0;
 
-    ivec2 size = imageSize(image);
+    ivec2 size = imageSize(drawImage);
     if (texelCoord.x < size.x && texelCoord.y < size.y)
     {
         Ray ray;
@@ -316,8 +331,8 @@ void main()
         uint seed = uint(uint(texelCoord.x) * uint(1973) + uint(texelCoord.y) * uint(9277) + uint(PushConstants.frame) * uint(26699));
         vec3 col = trace(ray, seed);
 
-        vec3 colPrev = imageLoad(image, texelCoord).rgb;
+        vec3 colPrev = imageLoad(drawImage, texelCoord).rgb;
         col = mix(colPrev, col, 1.0 / (float(PushConstants.frame) + 1));
-        imageStore(image, texelCoord, vec4(col, 1.0));
+        imageStore(drawImage, texelCoord, vec4(col, 1.0));
     }
 }
