@@ -146,7 +146,7 @@ namespace path_tracing
         }
     }
 
-    int handleMapProperty(const std::optional<std::string>& property, std::unordered_map<std::string, int>& map, int currentIndex) {
+    int handleMapProperty(const std::optional<std::string>& property, std::unordered_map<std::string, int>& map, int& currentIndex) {
         if (property.has_value()) {
             const std::string& key = property.value();
             if (map.contains(key))

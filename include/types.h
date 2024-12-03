@@ -82,6 +82,12 @@ namespace renderer
         glm::mat4 invView;
         glm::mat4 invProj;
     };
+
+    struct PostProcessingPushConstants
+    {
+        uint32_t method = 1;
+        float exposition = 2.0;
+    };
 }
 
 namespace path_tracing
@@ -166,7 +172,9 @@ namespace path_tracing
         VkDeviceAddress meshInfoBuffer;
         uint32_t meshCount;
         uint32_t frame;
-        uint32_t useSkybox;
-        uint32_t skyboxVisible;
+        uint32_t bouncesCount = 5;
+        float skyboxIntensity = 10.0;
+        uint32_t skyboxVisible = 0;
+        uint32_t smoothShading = 1;
     };
 }

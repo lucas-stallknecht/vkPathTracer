@@ -29,6 +29,7 @@ namespace renderer
         void cleanup();
 
         path_tracing::PushConstants ptPushConstants_{};
+        PostProcessingPushConstants ppPushConstants_{};
 
     private:
         void initVulkan(GLFWwindow* window);
@@ -48,6 +49,8 @@ namespace renderer
         void createGlobalDescriptors();
         void createPathTracingDescriptors();
         void createPathTracingPipeline();
+        void createPostProcessingDescriptors();
+        void createPostProcessingPipeline();
         void createCommands();
         void createSyncs();
         void updateGlobalBuffer(const core::Camera& camera) const;
@@ -72,6 +75,7 @@ namespace renderer
         VmaAllocator allocator_{};
         vk_utils::DescriptorAllocator globalDescriptorAllocator_{};
         AllocatedImage skybox_;
+        std::vector<AllocatedImage> textures_;
         VkSampler defaultLinearSampler_ = VK_NULL_HANDLE;
 
         VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
@@ -81,6 +85,7 @@ namespace renderer
         VkExtent2D swapchainExtent_ = {0, 0};
 
         AllocatedImage drawImage_;
+        AllocatedImage postProcessImage_;
 
         AllocatedBuffer globalBuffer_;
         VkDescriptorSetLayout globalDescLayout_ = VK_NULL_HANDLE;
@@ -91,6 +96,11 @@ namespace renderer
         VkPipeline ptPipeline_ = VK_NULL_HANDLE;
         VkPipelineLayout ptPipelineLayout_ = VK_NULL_HANDLE;
         path_tracing::SceneBuffers ptScene_;
+
+        VkDescriptorSetLayout ppDescLayout_ = VK_NULL_HANDLE;
+        VkDescriptorSet ppDescriptors_ = VK_NULL_HANDLE;
+        VkPipeline ppPipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout ppPipelineLayout_ = VK_NULL_HANDLE;
 
         ImmediateHandles immediateHandles_;
         DeletionQueue deletionQueue_;

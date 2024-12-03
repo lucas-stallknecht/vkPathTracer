@@ -1,6 +1,7 @@
 #pragma once
 #include "types.h"
 #include <string>
+#include <map>
 
 namespace path_tracing {
 
@@ -24,6 +25,6 @@ private:
     uint32_t maxDepth_ = 0;
 };
 
-    int handleMapProperty(const std::optional<std::string>& property, std::unordered_map<std::string, int>& map, int currentIndex);
+    int handleMapProperty(const std::optional<std::string>& property, std::unordered_map<std::string, int>& map, int& currentIndex);
 
 } // core_utils

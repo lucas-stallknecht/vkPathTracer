@@ -54,6 +54,7 @@ struct HitInfo {
     bool hit;
     Material material;
     uint triIndex;
+    uint vertexOffset;
 };
 
 struct Camera {
@@ -64,14 +65,14 @@ struct Camera {
 
 
 
-layout (local_size_x = 8, local_size_y = 8) in;
+layout (local_size_x = 16, local_size_y = 16) in;
 
 layout (set = 0, binding = 0) uniform globalBuffer {
     Camera cam;
 };
 layout (set = 0, binding = 1) uniform samplerCube skybox;
 layout (rgba32f, set = 1, binding = 0) uniform image2D drawImage;
-layout (set = 1, binding = 1) uniform sampler2D textures[1];
+layout (set = 1, binding = 1) uniform sampler2D textures[];
 layout (buffer_reference, std430) readonly buffer VertexBuffer {
     Vertex vertices[];
 } vertices;
@@ -96,16 +97,15 @@ layout (push_constant) uniform constants
     MeshInfoBuffer meshInfoBuffer;
     uint meshCount;
     uint frame;
-    uint useSkybox;
+    uint bouncesCount;
+    float skyboxIntensity;
     uint skyboxVisbility;
+    uint smoothShading;
 } PushConstants;
 
 
 #define PI 3.14159265359f
 #define JITTER_CONSTANT 0.00002
-#define GAMMA 2.2
-#define INV_GAMMA 1.0 / GAMMA
-const uint BOUNCES = 5;
 
 // ========= RANDOM FUNCTIONS =========
 uint wang_hash(inout uint seed) {
@@ -217,7 +217,8 @@ HitInfo intersect(Ray ray) {
                     if (triangleHi.hit && (triangleHi.dist < hi.dist)) {
                         hi = triangleHi;
                         hi.material = PushConstants.materialBuffer.materials[meshInfo.materialIndex];
-                        hi.triIndex = i;
+                        hi.triIndex = i + meshInfo.triangleOffset;
+                        hi.vertexOffset = meshInfo.vertexOffset;
                     }
                 }
             } else {
@@ -244,14 +245,11 @@ vec3 trace(Ray ray, inout uint seed) {
     vec3 rayCol = vec3(1.);
     vec3 pixelColor = vec3(0.);
 
-    for (int i = 0; i < BOUNCES; i++) {
+    for (int i = 0; i < PushConstants.bouncesCount; i++) {
         HitInfo hi = intersect(ray);
         if (!hi.hit) {
-
-            if(PushConstants.useSkybox == 1) {
-                vec3 skyColor = texture(skybox, ray.rd).rgb;
-                pixelColor += skyColor * 8.0 * rayCol * clamp(i, PushConstants.skyboxVisbility, 1);
-            }
+            vec3 skyColor = texture(skybox, ray.rd).rgb;
+            pixelColor += skyColor * PushConstants.skyboxIntensity * rayCol * clamp(i, PushConstants.skyboxVisbility, 1);
             break;
         }
         vec3 albedo = hi.material.baseCol;
@@ -259,12 +257,14 @@ vec3 trace(Ray ray, inout uint seed) {
         float metallic = hi.material.metallic;
 
         Triangle tri = PushConstants.triangleBuffer.triangles[hi.triIndex];
-        Vertex v0 = PushConstants.vertexBuffer.vertices[tri.v0];
-        Vertex v1 = PushConstants.vertexBuffer.vertices[tri.v1];
-        Vertex v2 = PushConstants.vertexBuffer.vertices[tri.v2];
+        Vertex v0 = PushConstants.vertexBuffer.vertices[tri.v0 + hi.vertexOffset];
+        Vertex v1 = PushConstants.vertexBuffer.vertices[tri.v1 + hi.vertexOffset];
+        Vertex v2 = PushConstants.vertexBuffer.vertices[tri.v2 + hi.vertexOffset];
         vec3 bar = calculateBarycentric(hi.pos, v0.pos, v1.pos, v2.pos);
-        hi.normal =  bar.x * v0.normal + bar.y * v1.normal + bar.z * v2.normal;
-        vec2 uv = bar.x * vec2(v0.uv1, 1.0 - v0.uv2) + bar.y * vec2(v1.uv1,  1.0 - v1.uv2) + bar.z * vec2(v2.uv1,  1.0 - v2.uv2);
+        vec2 uv = bar.x * vec2(v0.uv1, v0.uv2) + bar.y * vec2(v1.uv1, v1.uv2) + bar.z * vec2(v2.uv1, v2.uv2);
+        if(PushConstants.smoothShading > 0) {
+            hi.normal =  bar.x * v0.normal + bar.y * v1.normal + bar.z * v2.normal;
+        }
 
         if(hi.material.baseColMapIndex > -1) {
             albedo = texture(textures[hi.material.baseColMapIndex], uv).rgb;

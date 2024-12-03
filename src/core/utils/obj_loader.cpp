@@ -62,7 +62,7 @@ namespace core_utils
                     if (index.texcoord_index >= 0)
                     {
                         vertex.uv1 = attrib.texcoords[2 * index.texcoord_index + 0];
-                        vertex.uv2 = attrib.texcoords[2 * index.texcoord_index + 1];
+                        vertex.uv2 = 1.0 - attrib.texcoords[2 * index.texcoord_index + 1];
                     }
                     vertices.push_back(vertex);
 
