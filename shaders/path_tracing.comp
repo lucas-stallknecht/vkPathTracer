@@ -70,7 +70,7 @@ layout (local_size_x = 16, local_size_y = 16) in;
 layout (set = 0, binding = 0) uniform globalBuffer {
     Camera cam;
 };
-layout (set = 0, binding = 1) uniform samplerCube skybox;
+layout (set = 0, binding = 1) uniform samplerCube envMap;
 layout (rgba32f, set = 1, binding = 0) uniform image2D drawImage;
 layout (set = 1, binding = 1) uniform sampler2D textures[];
 layout (buffer_reference, std430) readonly buffer VertexBuffer {
@@ -98,14 +98,15 @@ layout (push_constant) uniform constants
     uint meshCount;
     uint frame;
     uint bouncesCount;
-    float skyboxIntensity;
-    uint skyboxVisbility;
+    float envMapIntensity;
+    uint envMapVisbility;
     uint smoothShading;
 } PushConstants;
 
 
 #define PI 3.14159265359f
 #define JITTER_CONSTANT 0.00002
+#define MAX_ENV_MAP_VALUE 3.0
 
 // ========= RANDOM FUNCTIONS =========
 uint wang_hash(inout uint seed) {
@@ -245,11 +246,11 @@ vec3 trace(Ray ray, inout uint seed) {
     vec3 rayCol = vec3(1.);
     vec3 pixelColor = vec3(0.);
 
-    for (int i = 0; i < PushConstants.bouncesCount; i++) {
+    for (int i = 0; i < PushConstants.bouncesCount + 1; i++) {
         HitInfo hi = intersect(ray);
         if (!hi.hit) {
-            vec3 skyColor = texture(skybox, ray.rd).rgb;
-            pixelColor += skyColor * PushConstants.skyboxIntensity * rayCol * clamp(i, PushConstants.skyboxVisbility, 1);
+            vec3 envColor = clamp(texture(envMap, ray.rd).rgb, 0.0, MAX_ENV_MAP_VALUE);
+            pixelColor += envColor * PushConstants.envMapIntensity * rayCol * clamp(i, PushConstants.envMapVisbility, 1);
             break;
         }
         vec3 albedo = hi.material.baseCol;

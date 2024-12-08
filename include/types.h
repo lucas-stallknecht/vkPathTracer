@@ -16,6 +16,10 @@ namespace core
         float uv1;
         glm::vec3 normal;
         float uv2;
+
+        bool operator==(const Vertex& other) const {
+            return position == other.position && uv1 == other.uv1 && uv2 == other.uv2;
+        }
     }; // 32 bytes
 }
 
@@ -86,7 +90,7 @@ namespace renderer
     struct PostProcessingPushConstants
     {
         uint32_t method = 1;
-        float exposition = 2.0;
+        float exposure = 1.0;
     };
 }
 
@@ -102,7 +106,13 @@ namespace path_tracing
         float padding2;
     }; // 32 bytes
 
-    struct MaterialProperties {
+    struct Texture
+    {
+        renderer::AllocatedImage image;
+        std::string name;
+    };
+
+    struct Material {
         glm::vec3 color = glm::vec3(1.0f);
         float emissiveStrength = 0.0f;
         float roughness = 0.5f;
@@ -110,6 +120,18 @@ namespace path_tracing
         std::optional<std::string> colorMap;
         std::optional<std::string> roughnessMap;
         std::optional<std::string> metallicMap;
+
+        static int handleMapProperty(const std::optional<std::string>& property, std::unordered_map<std::string, int>& map, int& currentIndex) {
+            if (property.has_value()) {
+                const std::string& key = property.value();
+                if (map.contains(key))
+                    return map.at(key);
+
+                map.emplace(key, ++currentIndex);
+                return currentIndex;
+            }
+            return -1;
+        }
     };
 
     struct GPUMaterial
@@ -133,13 +155,6 @@ namespace path_tracing
         uint32_t index; // triangleIndex if leaf node, otherwise childIndex
     }; // 32 bytes
 
-    struct Mesh
-    {
-        std::vector<core::Vertex> vertices;
-        std::vector<Triangle> triangles;
-        MaterialProperties material;
-        std::vector<BVHNode> nodes;
-    };
 
     struct SceneBuffers
     {
@@ -173,8 +188,8 @@ namespace path_tracing
         uint32_t meshCount;
         uint32_t frame;
         uint32_t bouncesCount = 5;
-        float skyboxIntensity = 10.0;
-        uint32_t skyboxVisible = 0;
+        float envMapIntensity = 10.0;
+        uint32_t envMapVisible = 0;
         uint32_t smoothShading = 1;
     };
 }

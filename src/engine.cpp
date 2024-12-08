@@ -1,6 +1,5 @@
 #include "engine.h"
 
-#include "path_tracing/trace_mesh.h"
 
 namespace engine
 {
@@ -9,26 +8,13 @@ namespace engine
         initWindow();
         initImGui();
         renderer_.init(window_);
-
         camera_.position = glm::vec3(0.0, 0.0, 1.5);
 
-        path_tracing::TraceMeshBuilder builder;
-        builder.setGeometry("./assets/models/grenade.obj");
-        builder.setMaterial({
-            .colorMap =  "./assets/textures/grenade_basecolor.png",
-            .roughnessMap = "./assets/textures/grenade_roughness.png",
-            .metallicMap = "./assets/textures/grenade_metallic.png"
-        });
-        path_tracing::Mesh grenade = builder.build(12);
-        // builder.setGeometry("./assets/models/dragon.obj");
-        // builder.setMaterial({
-        //     .color = glm::vec3(0.750743, 0.363014, 0.259456),
-        //     .roughness = 0.7
-        // });
-        // path_tracing::Mesh dragon = builder.build(32);
-        const std::vector<path_tracing::Mesh> scene = {grenade};
-        renderer_.uploadPathTracingScene(scene);
-        renderer_.uploadSkybox("./assets/skyboxes/paris");
+        path_tracing::Mesh armoredCat = path_tracing::loadFromObj("./assets/models/armored_cat.obj");
+        // path_tracing::Mesh dragon = path_tracing::loadFromObj("./assets/models/dragon.obj");
+
+        renderer_.uploadPathTracingScene({armoredCat});
+        renderer_.uploadEnvMap("./assets/skyboxes/little_paris_eiffel_tower_2k.hdr");
     }
 
     void Engine::initWindow()
@@ -168,17 +154,23 @@ namespace engine
                 bool change = false;
                 if (ImGui::CollapsingHeader("Path tracing", ImGuiTreeNodeFlags_DefaultOpen))
                 {
-                    change |= ImGui::SliderInt("Bounces count", reinterpret_cast<int*>(&renderer_.ptPushConstants_.bouncesCount), 0, 10);
-                    change |= ImGui::SliderFloat("Skybox intensity", &renderer_.ptPushConstants_.skyboxIntensity, 0.0, 40.0);
-                    change |= ImGui::SliderInt("Show skybox", reinterpret_cast<int*>(&renderer_.ptPushConstants_.skyboxVisible), 0, 1);
-                    change |= ImGui::SliderInt("Smooth shading", reinterpret_cast<int*>(&renderer_.ptPushConstants_.smoothShading), 0, 1);
+                    change |= ImGui::SliderInt("Bounces count",
+                                               reinterpret_cast<int*>(&renderer_.ptPushConstants_.bouncesCount), 0, 10);
+                    change |= ImGui::SliderFloat("Environment map intensity",
+                                                 &renderer_.ptPushConstants_.envMapIntensity, 0.0, 40.0);
+                    change |= ImGui::SliderInt("Show environment map",
+                                               reinterpret_cast<int*>(&renderer_.ptPushConstants_.envMapVisible), 0, 1);
+                    change |= ImGui::SliderInt("Smooth shading",
+                                               reinterpret_cast<int*>(&renderer_.ptPushConstants_.smoothShading), 0, 1);
                 }
                 if (ImGui::CollapsingHeader("Post processing", ImGuiTreeNodeFlags_DefaultOpen))
                 {
-                    change |= ImGui::SliderInt("Tonemapping method", reinterpret_cast<int*>(&renderer_.ppPushConstants_.method), 0, 1);
-                    change |= ImGui::SliderFloat("Exposition value (method 1)", &renderer_.ppPushConstants_.exposition, 0.0, 10.0);
+                    change |= ImGui::SliderInt("Tonemapping",
+                                               reinterpret_cast<int*>(&renderer_.ppPushConstants_.method), 0, 1);
+                    change |= ImGui::SliderFloat("Exposure value (method 1)", &renderer_.ppPushConstants_.exposure, 0.0,
+                                                 10.0);
                 }
-                if(change)
+                if (change)
                     renderer_.resetAccumulation();
                 ImGui::End();
             }

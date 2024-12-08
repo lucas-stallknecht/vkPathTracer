@@ -14,11 +14,12 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 
-#include "utils/images.h"
-#include "utils/shaders.h"
-#include "utils/compatibility.h"
-#include "utils/vk_infos.h"
-#include "path_tracing/trace_mesh.h"
+#include "vk_utils/vk_images.h"
+#include "vk_utils/vk_shaders.h"
+#include "vk_utils/vk_compatibility.h"
+#include "vk_utils/vk_infos.h"
+#include "path_tracing/geometry.h"
+#include "path_tracing/mesh.h"
 
 namespace renderer
 {
@@ -26,8 +27,40 @@ namespace renderer
     {
         initVulkan(window);
         initImguiBackend(window);
+
+        std::vector<vk_utils::DescriptorAllocator::PoolSizeRatio> sizes =
+        {
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20},
+        };
+        globalDescriptorAllocator_.initPool(device_, 10, sizes);
+
+        drawImage_ = createImage(
+            {swapchainExtent_.width, swapchainExtent_.height, 1},
+            VK_FORMAT_R32G32B32A32_SFLOAT,
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, false
+        );
+
+        postProcessImage_ = createImage(
+            {swapchainExtent_.width, swapchainExtent_.height, 1},
+            VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, false
+        );
+        deletionQueue_.push_function([=]()
+        {
+            destroyImage(drawImage_);
+            destroyImage(postProcessImage_);
+        });
+
+        initGlobalResources();
+        initPathTracing();
+        initPostProcessing();
+        initEquiToCubeMap();
     }
 
+
+    // VULKAN CONTEXT INITIALIZATION
     void Renderer::initVulkan(GLFWwindow* window)
     {
         createInstance(window);
@@ -35,15 +68,8 @@ namespace renderer
         createLogicaldevice();
         createSwapchain(window);
         createVmaAllocator();
-        createDrawImage();
         createCommands();
         createSyncs();
-        createGlobalBuffer();
-        createGlobalDescriptors();
-        createPathTracingDescriptors();
-        createPathTracingPipeline();
-        createPostProcessingDescriptors();
-        createPostProcessingPipeline();
     }
 
     void Renderer::createInstance(GLFWwindow* window)
@@ -226,7 +252,7 @@ namespace renderer
     {
         for (const auto& availableFormat : availableFormats)
         {
-            if (availableFormat.format == VK_FORMAT_R8G8B8A8_SRGB && availableFormat.colorSpace ==
+            if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB && availableFormat.colorSpace ==
                 VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             {
                 return availableFormat;
@@ -357,313 +383,6 @@ namespace renderer
         });
     }
 
-    void Renderer::createDrawImage()
-    {
-        drawImage_ = createImage(
-            {swapchainExtent_.width, swapchainExtent_.height, 1},
-            VK_FORMAT_R32G32B32A32_SFLOAT,
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, false
-        );
-
-        postProcessImage_ = createImage(
-            {swapchainExtent_.width, swapchainExtent_.height, 1},
-            VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, false
-        );
-        deletionQueue_.push_function([=]()
-        {
-            destroyImage(drawImage_);
-            destroyImage(postProcessImage_);
-        });
-    }
-
-    void Renderer::createGlobalBuffer()
-    {
-        globalBuffer_ = createBuffer(
-            sizeof(CameraUniform),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VMA_MEMORY_USAGE_CPU_TO_GPU
-        );
-
-        VkSamplerCreateInfo sampl = {
-            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-            .magFilter = VK_FILTER_LINEAR,
-            .minFilter = VK_FILTER_LINEAR
-        };
-        vkCreateSampler(device_, &sampl, nullptr, &defaultLinearSampler_);
-
-        deletionQueue_.push_function([=]()
-        {
-            destroyBuffer(globalBuffer_);
-            vkDestroySampler(device_, defaultLinearSampler_, nullptr);
-        });
-    }
-
-    void Renderer::uploadSkybox(const std::string& skyboxDirectory)
-    {
-        if (skybox_.image != VK_NULL_HANDLE)
-        {
-            destroyImage(skybox_);
-        }
-        std::array<std::string, 6> faces{
-            skyboxDirectory + "/px.png", // right
-            skyboxDirectory + "/nx.png", // left
-            skyboxDirectory + "/py.png", // top
-            skyboxDirectory + "/ny.png", // bottom
-            skyboxDirectory + "/pz.png", // front
-            skyboxDirectory + "/nz.png" // back
-        };
-
-        VkExtent3D texSize = {1, 1, 1};
-        std::array<stbi_uc*, 6> textureData{};
-        for (int i = 0; i < faces.size(); i++)
-        {
-            textureData[i] = vk_utils::loadTextureData(faces[i], texSize);
-        }
-        skybox_ = createCubemap(textureData, texSize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
-        for (int i = 0; i < faces.size(); i++)
-        {
-            vk_utils::freeImageData(textureData[i]);
-        }
-
-        VkDescriptorImageInfo skyboxInfo = {
-            .sampler = defaultLinearSampler_,
-            .imageView = skybox_.imageView,
-            .imageLayout = VK_IMAGE_LAYOUT_GENERAL
-        };
-        VkWriteDescriptorSet imgWrtie = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = globalDescriptors_,
-            .dstBinding = 1,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo = &skyboxInfo
-        };
-        vkUpdateDescriptorSets(device_, 1, &imgWrtie, 0, nullptr);
-        deletionQueue_.push_function([=]()
-        {
-            destroyImage(skybox_);
-        });
-    }
-
-    void Renderer::createGlobalDescriptors()
-    {
-        // Global descriptors
-        vk_utils::DescriptorLayoutBuilder globalBuilder;
-        globalBuilder.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-        globalBuilder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-
-        VkDescriptorBindingFlags bindingFlgas[2] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT};
-        VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-            .bindingCount = 2,
-            .pBindingFlags = &bindingFlgas[0]
-        };
-        globalDescLayout_ = globalBuilder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT, &bindingFlagsInfo);
-
-        std::vector<vk_utils::DescriptorAllocator::PoolSizeRatio> sizes =
-        {
-            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
-            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20},
-        };
-        globalDescriptorAllocator_.initPool(device_, 10, sizes);
-        globalDescriptors_ = globalDescriptorAllocator_.allocate(device_, globalDescLayout_);
-
-        VkDescriptorBufferInfo globalBufferInfo = {
-            .buffer = globalBuffer_.buffer,
-            .offset = 0,
-            .range = globalBuffer_.allocation->GetSize()
-        };
-        VkWriteDescriptorSet globalBufferWrite = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = globalDescriptors_,
-            .dstBinding = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .pBufferInfo = &globalBufferInfo,
-        };
-
-        vkUpdateDescriptorSets(device_, 1, &globalBufferWrite, 0, nullptr);
-        deletionQueue_.push_function([=]()
-        {
-            vkDestroyDescriptorSetLayout(device_, globalDescLayout_, nullptr);
-        });
-    }
-
-    void Renderer::createPathTracingDescriptors()
-    {
-        vk_utils::DescriptorLayoutBuilder ptBuilder;
-        ptBuilder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-        ptBuilder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20);
-
-        VkDescriptorBindingFlags bindingFlgas[2] = {
-            0, VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
-        };
-        VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-            .bindingCount = 2,
-            .pBindingFlags = bindingFlgas
-        };
-        ptDescLayout_ = ptBuilder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT, &bindingFlagsInfo);
-
-        const uint32_t maxTextureDescCount = 20;
-        VkDescriptorSetVariableDescriptorCountAllocateInfo texturesVariableInfo = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
-            .descriptorSetCount = 1,
-            .pDescriptorCounts = &maxTextureDescCount
-        };
-
-        ptDescriptors_ = globalDescriptorAllocator_.allocate(device_, ptDescLayout_, &texturesVariableInfo);
-
-        VkDescriptorImageInfo imgInfo = {
-            .imageView = drawImage_.imageView,
-            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-        };
-        VkWriteDescriptorSet drawImageWrite = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = ptDescriptors_,
-            .dstBinding = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .pImageInfo = &imgInfo,
-        };
-
-        vkUpdateDescriptorSets(device_, 1, &drawImageWrite, 0, nullptr);
-        deletionQueue_.push_function([=]()
-        {
-            vkDestroyDescriptorSetLayout(device_, ptDescLayout_, nullptr);
-            globalDescriptorAllocator_.destroyPool(device_);
-        });
-    }
-
-    void Renderer::createPathTracingPipeline()
-    {
-        auto compShaderCode = vk_utils::readFile("./shaders/path_tracing.comp.spv");
-        auto compModule = vk_utils::createShaderModule(device_, compShaderCode);
-
-        VkPipelineShaderStageCreateInfo computeShaderStageInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-            .module = compModule,
-            .pName = "main",
-        };
-        std::vector<VkDescriptorSetLayout> setLayouts = {globalDescLayout_, ptDescLayout_};
-
-        VkPushConstantRange constantRange = {
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .offset = 0,
-            .size = sizeof(path_tracing::PushConstants)
-        };
-
-        VkPipelineLayoutCreateInfo computePipelineLayoutInfo{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 2,
-            .pSetLayouts = setLayouts.data(),
-            .pushConstantRangeCount = 1,
-            .pPushConstantRanges = &constantRange
-        };
-
-        VK_CHECK(vkCreatePipelineLayout(device_, &computePipelineLayoutInfo, nullptr, &ptPipelineLayout_),
-                 "Could not create pipeline layout!");
-
-        VkComputePipelineCreateInfo pipelineInfo{
-            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-            .stage = computeShaderStageInfo,
-            .layout = ptPipelineLayout_,
-        };
-
-        VK_CHECK(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &ptPipeline_),
-                 "Failed to create compute pipeline!");
-        vkDestroyShaderModule(device_, compModule, nullptr);
-
-        deletionQueue_.push_function([=]()
-        {
-            vkDestroyPipeline(device_, ptPipeline_, nullptr);
-            vkDestroyPipelineLayout(device_, ptPipelineLayout_, nullptr);
-        });
-    }
-
-    void Renderer::createPostProcessingDescriptors()
-    {
-        vk_utils::DescriptorLayoutBuilder ppBuilder;
-        ppBuilder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-        ppBuilder.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-        ppDescLayout_ = ppBuilder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT);
-        ppDescriptors_ = globalDescriptorAllocator_.allocate(device_, ppDescLayout_);
-
-        VkDescriptorImageInfo imgInfo = {
-            .imageView = drawImage_.imageView,
-            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-        };
-        VkDescriptorImageInfo imgInfo2 = {
-            .imageView = postProcessImage_.imageView,
-            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-        };
-        VkDescriptorImageInfo descs[2] = {imgInfo, imgInfo2};
-        VkWriteDescriptorSet drawImageWrite = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = ppDescriptors_,
-            .dstBinding = 0,
-            .descriptorCount = 2,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .pImageInfo = descs,
-        };
-
-        vkUpdateDescriptorSets(device_, 1, &drawImageWrite, 0, nullptr);
-        deletionQueue_.push_function([=]()
-        {
-            vkDestroyDescriptorSetLayout(device_, ppDescLayout_, nullptr);
-        });
-    }
-
-    void Renderer::createPostProcessingPipeline()
-    {
-        auto compShaderCode = vk_utils::readFile("./shaders/tonemapping.comp.spv");
-        auto compModule = vk_utils::createShaderModule(device_, compShaderCode);
-
-        VkPipelineShaderStageCreateInfo computeShaderStageInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-            .module = compModule,
-            .pName = "main",
-        };
-        std::vector<VkDescriptorSetLayout> setLayouts = {ppDescLayout_};
-
-        VkPushConstantRange constantRange = {
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .offset = 0,
-            .size = sizeof(PostProcessingPushConstants)
-        };
-
-        VkPipelineLayoutCreateInfo computePipelineLayoutInfo{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 1,
-            .pSetLayouts = setLayouts.data(),
-            .pushConstantRangeCount = 1,
-            .pPushConstantRanges = &constantRange
-        };
-
-        VK_CHECK(vkCreatePipelineLayout(device_, &computePipelineLayoutInfo, nullptr, &ppPipelineLayout_),
-                 "Could not create post processing pipeline layout!");
-
-        VkComputePipelineCreateInfo pipelineInfo{
-            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-            .stage = computeShaderStageInfo,
-            .layout = ppPipelineLayout_,
-        };
-
-        VK_CHECK(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &ppPipeline_),
-                 "Failed to create post processing compute pipeline!");
-        vkDestroyShaderModule(device_, compModule, nullptr);
-
-        deletionQueue_.push_function([=]()
-        {
-            vkDestroyPipeline(device_, ppPipeline_, nullptr);
-            vkDestroyPipelineLayout(device_, ppPipelineLayout_, nullptr);
-        });
-    }
-
     void Renderer::createCommands()
     {
         VkCommandPoolCreateInfo poolInfo = {
@@ -749,9 +468,10 @@ namespace renderer
         });
     }
 
+
+    // IMGUI
     void Renderer::initImguiBackend(GLFWwindow* wwindow)
     {
-        // Create a pool for imgui
         VkDescriptorPoolSize poolSizes[] = {
             {VK_DESCRIPTOR_TYPE_SAMPLER, 1000},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000},
@@ -803,36 +523,459 @@ namespace renderer
     }
 
 
-    void Renderer::render(const core::Camera& camera)
+    // UNIVERSAL RESOURCES INITIALIZATION
+    void Renderer::initGlobalResources()
     {
-        updateGlobalBuffer(camera);
-        draw();
-    }
+        // GLO-Resources
+        globalResources_.buffer = createBuffer(
+            sizeof(CameraUniform),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VMA_MEMORY_USAGE_CPU_TO_GPU
+        );
 
-    void Renderer::updateGlobalBuffer(const core::Camera& camera) const
-    {
-        void* data = globalBuffer_.allocation->GetMappedData();
-        CameraUniform cam = {
-            .position = camera.position,
-            .invView = glm::inverse(camera.viewMatrix),
-            .invProj = glm::inverse(camera.projMatrix)
+        VkSamplerCreateInfo sampl = {
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = VK_FILTER_LINEAR,
+            .minFilter = VK_FILTER_LINEAR
         };
-        memcpy(data, &cam, sizeof(CameraUniform));
+        vkCreateSampler(device_, &sampl, nullptr, &globalResources_.defaultLinearSampler);
+
+        // GLO-Descriptors
+        vk_utils::DescriptorLayoutBuilder globalBuilder;
+        globalBuilder.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        globalBuilder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+
+        VkDescriptorBindingFlags bindingFlgas[2] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT};
+        VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+            .bindingCount = 2,
+            .pBindingFlags = &bindingFlgas[0]
+        };
+        descriptorLayouts_.global = globalBuilder.
+            build(device_, VK_SHADER_STAGE_COMPUTE_BIT, &bindingFlagsInfo);
+        descriptorSets_.glboal = globalDescriptorAllocator_.
+            allocate(device_, descriptorLayouts_.global);
+
+        VkDescriptorBufferInfo globalBufferInfo = {
+            .buffer = globalResources_.buffer.buffer,
+            .offset = 0,
+            .range = globalResources_.buffer.allocation->GetSize()
+        };
+        VkWriteDescriptorSet globalBufferWrite = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptorSets_.glboal,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .pBufferInfo = &globalBufferInfo,
+        };
+
+        vkUpdateDescriptorSets(device_, 1, &globalBufferWrite, 0, nullptr);
+        deletionQueue_.push_function([=]()
+        {
+            destroyBuffer(globalResources_.buffer);
+            vkDestroySampler(device_, globalResources_.defaultLinearSampler, nullptr);
+            vkDestroyDescriptorSetLayout(device_, descriptorLayouts_.global, nullptr);
+        });
     }
 
-    void Renderer::resetAccumulation()
+
+    // PATH TRACING INITIALIZATION
+    void Renderer::initPathTracing()
     {
-        ptPushConstants_.frame = 0;
+        // PT-Descriptors
+        vk_utils::DescriptorLayoutBuilder builder;
+        builder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        builder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20);
+
+        VkDescriptorBindingFlags bindingFlgas[2] = {
+            0, VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
+        };
+        VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+            .bindingCount = 2,
+            .pBindingFlags = bindingFlgas
+        };
+        descriptorLayouts_.pathTracing = builder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT, &bindingFlagsInfo);
+
+        const uint32_t maxTextureDescCount = 20;
+        VkDescriptorSetVariableDescriptorCountAllocateInfo texturesVariableInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+            .descriptorSetCount = 1,
+            .pDescriptorCounts = &maxTextureDescCount
+        };
+        descriptorSets_.pathTracing = globalDescriptorAllocator_.allocate(
+            device_, descriptorLayouts_.pathTracing, &texturesVariableInfo);
+
+        VkDescriptorImageInfo imgInfo = {
+            .imageView = drawImage_.imageView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+        VkWriteDescriptorSet drawImageWrite = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptorSets_.pathTracing,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .pImageInfo = &imgInfo,
+        };
+        vkUpdateDescriptorSets(device_, 1, &drawImageWrite, 0, nullptr);
+
+
+        // PT-Pipeline
+        auto compShaderCode = vk_utils::readFile("./shaders/path_tracing.comp.spv");
+        auto compModule = vk_utils::createShaderModule(device_, compShaderCode);
+
+        VkPipelineShaderStageCreateInfo computeShaderStageInfo = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = compModule,
+            .pName = "main",
+        };
+        std::vector<VkDescriptorSetLayout> setLayouts = {
+            descriptorLayouts_.global, descriptorLayouts_.pathTracing
+        };
+
+        VkPushConstantRange constantRange = {
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            .offset = 0,
+            .size = sizeof(path_tracing::PushConstants)
+        };
+        VkPipelineLayoutCreateInfo computePipelineLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 2,
+            .pSetLayouts = setLayouts.data(),
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &constantRange
+        };
+
+        VK_CHECK(
+            vkCreatePipelineLayout(device_, &computePipelineLayoutInfo, nullptr, &pipelineLayouts_.pathTracing),
+            "Could not create pipeline layout!");
+
+        VkComputePipelineCreateInfo pipelineInfo{
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = computeShaderStageInfo,
+            .layout = pipelineLayouts_.pathTracing,
+        };
+
+        VK_CHECK(
+            vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipelines_.pathTracing),
+            "Failed to create compute pipeline!");
+        vkDestroyShaderModule(device_, compModule, nullptr);
+
+
+        deletionQueue_.push_function([=]()
+        {
+            vkDestroyPipeline(device_, pipelines_.pathTracing, nullptr);
+            vkDestroyPipelineLayout(device_, pipelineLayouts_.pathTracing, nullptr);
+            vkDestroyDescriptorSetLayout(device_, descriptorLayouts_.pathTracing, nullptr);
+            globalDescriptorAllocator_.destroyPool(device_);
+        });
+    }
+
+
+    // POST PROCESSING INITLIZATION()
+    void Renderer::initPostProcessing()
+    {
+        // PP-Descriptors
+        vk_utils::DescriptorLayoutBuilder builder;
+        builder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        builder.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        descriptorLayouts_.postProcessing = builder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT);
+        descriptorSets_.postProcessing = globalDescriptorAllocator_.allocate(
+            device_, descriptorLayouts_.postProcessing);
+
+        VkDescriptorImageInfo drawImgInfo = {
+            .imageView = drawImage_.imageView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+        VkWriteDescriptorSet drawImageWrite = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptorSets_.postProcessing,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .pImageInfo = &drawImgInfo,
+        };
+        VkDescriptorImageInfo ppImgInfo = {
+            .imageView = postProcessImage_.imageView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+        VkWriteDescriptorSet ppImageWrite = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptorSets_.postProcessing,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .pImageInfo = &ppImgInfo,
+        };
+        VkWriteDescriptorSet writes[2] = {drawImageWrite, ppImageWrite};
+
+        vkUpdateDescriptorSets(device_, 2, &writes[0], 0, nullptr);
+
+        // PP-Pipeline
+        auto compShaderCode = vk_utils::readFile("./shaders/post_processing.comp.spv");
+        auto compModule = vk_utils::createShaderModule(device_, compShaderCode);
+
+        VkPipelineShaderStageCreateInfo computeShaderStageInfo = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = compModule,
+            .pName = "main",
+        };
+        std::vector<VkDescriptorSetLayout> setLayouts = {descriptorLayouts_.postProcessing};
+
+        VkPushConstantRange constantRange = {
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            .offset = 0,
+            .size = sizeof(PostProcessingPushConstants)
+        };
+
+        VkPipelineLayoutCreateInfo computePipelineLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = setLayouts.data(),
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &constantRange
+        };
+
+        VK_CHECK(
+            vkCreatePipelineLayout(device_, &computePipelineLayoutInfo, nullptr, &pipelineLayouts_.postProcessing),
+            "Could not create post processing pipeline layout!");
+
+        VkComputePipelineCreateInfo pipelineInfo{
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = computeShaderStageInfo,
+            .layout = pipelineLayouts_.postProcessing,
+        };
+
+        VK_CHECK(
+            vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipelines_.postProcessing),
+            "Failed to create post processing compute pipeline!");
+        vkDestroyShaderModule(device_, compModule, nullptr);
+
+        deletionQueue_.push_function([=]()
+        {
+            vkDestroyPipeline(device_, pipelines_.postProcessing, nullptr);
+            vkDestroyPipelineLayout(device_, pipelineLayouts_.postProcessing, nullptr);
+            vkDestroyDescriptorSetLayout(device_, descriptorLayouts_.postProcessing, nullptr);
+        });
+    }
+
+
+    // EQUI TO CUBEMAP
+    void Renderer::initEquiToCubeMap()
+    {
+        // CU-Descriptors
+        vk_utils::DescriptorLayoutBuilder builder;
+        builder.addBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        builder.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        VkDescriptorBindingFlags bindingFlgas[2] = {
+            VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
+        };
+        VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+            .bindingCount = 2,
+            .pBindingFlags = bindingFlgas
+        };
+        descriptorLayouts_.cubemapCreation = builder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT, &bindingFlagsInfo);
+        descriptorSets_.cubemapCreation = globalDescriptorAllocator_.allocate(
+            device_, descriptorLayouts_.cubemapCreation);
+
+
+        // CU-Pipeline
+        auto compShaderCode = vk_utils::readFile("./shaders/equirectangular_to_cubemap.comp.spv");
+        auto compModule = vk_utils::createShaderModule(device_, compShaderCode);
+
+        VkPipelineShaderStageCreateInfo computeShaderStageInfo = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = compModule,
+            .pName = "main",
+        };
+        VkPipelineLayoutCreateInfo computePipelineLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &descriptorLayouts_.cubemapCreation,
+        };
+
+        VK_CHECK(
+            vkCreatePipelineLayout(device_, &computePipelineLayoutInfo, nullptr, &pipelineLayouts_.cubemapCreation),
+            "Could not create cube map pipeline layout!");
+
+        VkComputePipelineCreateInfo pipelineInfo{
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = computeShaderStageInfo,
+            .layout = pipelineLayouts_.cubemapCreation,
+        };
+
+        VK_CHECK(
+            vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipelines_.cubemapCreation),
+            "Failed to create cube map compute pipeline!");
+        vkDestroyShaderModule(device_, compModule, nullptr);
+
+        deletionQueue_.push_function([=]()
+        {
+            vkDestroyPipeline(device_, pipelines_.cubemapCreation, nullptr);
+            vkDestroyPipelineLayout(device_, pipelineLayouts_.cubemapCreation, nullptr);
+            vkDestroyDescriptorSetLayout(device_, descriptorLayouts_.cubemapCreation, nullptr);
+        });
+    }
+
+
+    // DATA UPLOAD
+    void Renderer::uploadEnvMap(const std::string& path)
+    {
+        if (globalResources_.envMap.image != VK_NULL_HANDLE)
+        {
+            destroyImage(globalResources_.envMap);
+        }
+
+        // Equirectangular image (HDR)
+        VkExtent3D equirectangularSize = {1, 1, 1};
+        constexpr VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT;
+
+        float* textureData = vk_utils::loadHDRTextureData(path, equirectangularSize);
+
+        AllocatedImage equirectangular{};
+        equirectangular.imageFormat = format;
+        equirectangular.imageExtent = equirectangularSize;
+
+        VkImageCreateInfo equiCreateInfo = vk_utils::imageCreateInfo(format,
+                                                                     VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                                                                     , equirectangularSize);
+
+        VmaAllocationCreateInfo allocinfo = {};
+        allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+        allocinfo.requiredFlags = static_cast<VkMemoryPropertyFlags>(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VK_CHECK(
+            vmaCreateImage(allocator_, &equiCreateInfo, &allocinfo, &equirectangular.image, &equirectangular.allocation,
+                nullptr),
+            "Could not create equirectangular image!");
+
+        VkImageViewCreateInfo equiViewCreateInfo = vk_utils::imageViewCreateInfo(format, equirectangular.image,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+        VK_CHECK(vkCreateImageView(device_, &equiViewCreateInfo, nullptr, &equirectangular.imageView),
+                 "Could not create equirectangular image view!");
+
+        const size_t dataSize = equirectangularSize.width * equirectangularSize.height * 4 * sizeof(float);
+        AllocatedBuffer stagingBuffer = createBuffer(dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                     VMA_MEMORY_USAGE_CPU_TO_GPU);
+        memcpy(stagingBuffer.info.pMappedData, textureData, dataSize);
+
+        vk_utils::freeImageData(textureData);
+
+        immediateSubmit([&](VkCommandBuffer cmd)
+        {
+            vk_utils::transitionImage(cmd, equirectangular.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+            // Copy buffer data into the image
+
+            VkBufferImageCopy copyRegion = {
+                .bufferOffset = 0,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageExtent = equirectangularSize
+            };
+            copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copyRegion.imageSubresource.mipLevel = 0;
+            copyRegion.imageSubresource.baseArrayLayer = 0;
+            copyRegion.imageSubresource.layerCount = 1;
+
+            vkCmdCopyBufferToImage(cmd, stagingBuffer.buffer, equirectangular.image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                   &copyRegion);
+
+            vk_utils::transitionImage(cmd, equirectangular.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                      VK_IMAGE_LAYOUT_GENERAL);
+        });
+        destroyBuffer(stagingBuffer);
+
+
+        // Cubemap image (6 layers)
+        constexpr uint32_t cubeMapWidth = 512;
+        VkExtent3D cubeMapSize = {cubeMapWidth, cubeMapWidth, 1};
+        globalResources_.envMap = createCubemap(cubeMapSize, format,
+                                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+
+        // Update cubemap creation descriptor set
+        VkDescriptorImageInfo equiInfo = {
+            .sampler = globalResources_.defaultLinearSampler,
+            .imageView = equirectangular.imageView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL
+        };
+        VkWriteDescriptorSet equiWriteInfo = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptorSets_.cubemapCreation,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &equiInfo
+        };
+        VkDescriptorImageInfo cubeMapInfo = {
+            .imageView = globalResources_.envMap.imageView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL
+        };
+        VkWriteDescriptorSet cubeMapWriteInfo = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptorSets_.cubemapCreation,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .pImageInfo = &cubeMapInfo
+        };
+        VkWriteDescriptorSet writes[2] = {equiWriteInfo, cubeMapWriteInfo};
+        vkUpdateDescriptorSets(device_, 2, &writes[0], 0, nullptr);
+
+
+        // Transform equirectangular to cube map
+        immediateSubmit([&](VkCommandBuffer cmd)
+        {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_.cubemapCreation);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayouts_.cubemapCreation, 0, 1,
+                                    &descriptorSets_.cubemapCreation, 0, nullptr);
+            vkCmdDispatch(cmd, std::ceil(cubeMapSize.width / 16.0), std::ceil(cubeMapSize.height / 16.0),
+                          6);
+        });
+
+        // Update path tracing creation descriptor set
+        VkDescriptorImageInfo cubeMapInfo2 = {
+            .sampler = globalResources_.defaultLinearSampler,
+            .imageView = globalResources_.envMap.imageView,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL
+        };
+        VkWriteDescriptorSet cubeMapWriteInfo2 = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptorSets_.glboal,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &cubeMapInfo2
+        };
+        vkUpdateDescriptorSets(device_, 1, &cubeMapWriteInfo2, 0, nullptr);
+
+        destroyImage(equirectangular);
+        deletionQueue_.push_function([=]()
+        {
+            destroyImage(globalResources_.envMap);
+        });
     }
 
     void Renderer::uploadPathTracingScene(const std::vector<path_tracing::Mesh>& scene)
     {
+        if (scene.size() == 0)
+            return;
+
         // Aggregate scene data to build global buffers
-        std::vector<core::Vertex> vertices;
-        std::vector<path_tracing::Triangle> triangles;
-        std::vector<path_tracing::BVHNode> nodes;
-        std::vector<path_tracing::GPUMaterial> materials;
-        std::vector<path_tracing::MeshInfo> meshInfos;
+        std::vector<core::Vertex> sceneVertices;
+        std::vector<path_tracing::Triangle> sceneTriangles;
+        std::vector<path_tracing::BVHNode> sceneNodes;
+        std::vector<path_tracing::GPUMaterial> scenemMterials;
+        std::vector<path_tracing::MeshInfo> sceneMeshInfos;
 
         std::unordered_map<std::string, int> texturePaths;
         int currentTexIndex = -1;
@@ -841,37 +984,38 @@ namespace renderer
 
         for (const auto& mesh : scene)
         {
-            vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
-            triangles.insert(triangles.end(), mesh.triangles.begin(), mesh.triangles.end());
-            nodes.insert(nodes.end(), mesh.nodes.begin(), mesh.nodes.end());
+            sceneVertices.insert(sceneVertices.end(), mesh.geometry.vertices_.begin(), mesh.geometry.vertices_.end());
+            sceneTriangles.insert(sceneTriangles.end(), mesh.geometry.triangles_.begin(),
+                                  mesh.geometry.triangles_.end());
+            sceneNodes.insert(sceneNodes.end(), mesh.geometry.nodes_.begin(), mesh.geometry.nodes_.end());
 
             path_tracing::GPUMaterial m = {
                 .baseCol = mesh.material.color,
-                .baseColMapIndex = path_tracing::handleMapProperty(mesh.material.colorMap, texturePaths,
-                                                                   currentTexIndex),
+                .baseColMapIndex = path_tracing::Material::handleMapProperty(mesh.material.colorMap, texturePaths,
+                                                                             currentTexIndex),
                 .emissiveStrength = mesh.material.emissiveStrength,
                 .roughness = mesh.material.roughness,
-                .roughnessMapIndex = path_tracing::handleMapProperty(mesh.material.roughnessMap, texturePaths,
-                                                                     currentTexIndex),
+                .roughnessMapIndex = path_tracing::Material::handleMapProperty(mesh.material.roughnessMap, texturePaths,
+                                                                               currentTexIndex),
                 .metallic = mesh.material.metallic,
-                .metallicMapIndex = path_tracing::handleMapProperty(mesh.material.metallicMap, texturePaths,
-                                                                    currentTexIndex),
+                .metallicMapIndex = path_tracing::Material::handleMapProperty(mesh.material.metallicMap, texturePaths,
+                                                                              currentTexIndex),
             };
-            materials.push_back(m);
-            meshInfos.push_back(offsets);
+            scenemMterials.push_back(m);
+            sceneMeshInfos.push_back(offsets);
 
-            offsets.vertexOffset += mesh.vertices.size();
-            offsets.triangleOffset += mesh.triangles.size();
-            offsets.nodeOffset += mesh.nodes.size();
+            offsets.vertexOffset += mesh.geometry.vertices_.size();
+            offsets.triangleOffset += mesh.geometry.triangles_.size();
+            offsets.nodeOffset += mesh.geometry.nodes_.size();
             offsets.materialIndex++;
         }
 
         // Calculate buffer sizes
-        const size_t vertexBufferSize = vertices.size() * sizeof(core::Vertex);
-        const size_t triangleBufferSize = triangles.size() * sizeof(path_tracing::Triangle);
-        const size_t nodeBufferSize = nodes.size() * sizeof(path_tracing::BVHNode);
-        const size_t materialBufferSize = materials.size() * sizeof(path_tracing::GPUMaterial);
-        const size_t meshInfoBufferSize = meshInfos.size() * sizeof(path_tracing::MeshInfo);
+        const size_t vertexBufferSize = sceneVertices.size() * sizeof(core::Vertex);
+        const size_t triangleBufferSize = sceneTriangles.size() * sizeof(path_tracing::Triangle);
+        const size_t nodeBufferSize = sceneNodes.size() * sizeof(path_tracing::BVHNode);
+        const size_t materialBufferSize = scenemMterials.size() * sizeof(path_tracing::GPUMaterial);
+        const size_t meshInfoBufferSize = sceneMeshInfos.size() * sizeof(path_tracing::MeshInfo);
 
         path_tracing::SceneBuffers newScene;
 
@@ -907,18 +1051,19 @@ namespace renderer
         };
 
         const std::vector<BufferData> bufferData = {
-            {vertices.data(), vertexBufferSize, &newScene.vertexBuffer, &newScene.vertexBufferAddress},
-            {triangles.data(), triangleBufferSize, &newScene.triangleBuffer, &newScene.triangleBufferAddress},
-            {nodes.data(), nodeBufferSize, &newScene.nodeBuffer, &newScene.nodeBufferAddress},
-            {materials.data(), materialBufferSize, &newScene.materialBuffer, &newScene.materialBufferAddress},
-            {meshInfos.data(), meshInfoBufferSize, &newScene.meshInfoBuffer, &newScene.meshInfoBufferAddress},
+            {sceneVertices.data(), vertexBufferSize, &newScene.vertexBuffer, &newScene.vertexBufferAddress},
+            {sceneTriangles.data(), triangleBufferSize, &newScene.triangleBuffer, &newScene.triangleBufferAddress},
+            {sceneNodes.data(), nodeBufferSize, &newScene.nodeBuffer, &newScene.nodeBufferAddress},
+            {scenemMterials.data(), materialBufferSize, &newScene.materialBuffer, &newScene.materialBufferAddress},
+            {sceneMeshInfos.data(), meshInfoBufferSize, &newScene.meshInfoBuffer, &newScene.meshInfoBufferAddress},
         };
 
 
         // Automatically create the GPU buffers and copy data from the vectors to staging buffer
         size_t currentOffset = 0;
-        for (auto b : bufferData)
+        for (int i = 0; i < bufferData.size(); i++)
         {
+            const BufferData& b = bufferData[i];
             memcpy((char*)stagingData + currentOffset, b.data, b.size);
             currentOffset += createGPUBuffer(b.size, b.data, *b.dstBuffer, *b.dstBufferAddress);
         }
@@ -938,7 +1083,7 @@ namespace renderer
                 currSrcOffset += b.size;
             }
         });
-        ptScene_ = newScene;
+        sceneBuffers_ = newScene;
         ptPushConstants_ = {
             newScene.vertexBufferAddress,
             newScene.triangleBufferAddress,
@@ -962,11 +1107,11 @@ namespace renderer
 
         deletionQueue_.push_function([&]()
         {
-            destroyBuffer(ptScene_.vertexBuffer);
-            destroyBuffer(ptScene_.triangleBuffer);
-            destroyBuffer(ptScene_.nodeBuffer);
-            destroyBuffer(ptScene_.materialBuffer);
-            destroyBuffer(ptScene_.meshInfoBuffer);
+            destroyBuffer(sceneBuffers_.vertexBuffer);
+            destroyBuffer(sceneBuffers_.triangleBuffer);
+            destroyBuffer(sceneBuffers_.nodeBuffer);
+            destroyBuffer(sceneBuffers_.materialBuffer);
+            destroyBuffer(sceneBuffers_.meshInfoBuffer);
         });
     }
 
@@ -981,11 +1126,12 @@ namespace renderer
             textures_.push_back(createImage(data, texSize, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT,
                                             false));
 
-            texturesInfo.emplace_back(defaultLinearSampler_, textures_.back().imageView, VK_IMAGE_LAYOUT_GENERAL);
+            texturesInfo.emplace_back(globalResources_.defaultLinearSampler, textures_.back().imageView,
+                                      VK_IMAGE_LAYOUT_GENERAL);
         }
         VkWriteDescriptorSet write = {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = ptDescriptors_,
+            .dstSet = descriptorSets_.pathTracing,
             .dstBinding = 1,
             .descriptorCount = static_cast<uint32_t>(texturesInfo.size()),
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1001,6 +1147,146 @@ namespace renderer
     }
 
 
+    // PER-FRAME FUNCTIONS
+    void Renderer::render(const core::Camera& camera)
+    {
+        updateGlobalDescriptors(camera);
+        draw();
+    }
+
+    void Renderer::drawImgui(VkCommandBuffer cmd, VkImageView targetImageView)
+    {
+        VkRenderingAttachmentInfo colorAttachment = vk_utils::attachmentInfo(
+            targetImageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        VkRenderingInfo renderInfo = vk_utils::renderingInfo(swapchainExtent_, &colorAttachment, nullptr);
+
+        vkCmdBeginRendering(cmd, &renderInfo);
+
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+
+        vkCmdEndRendering(cmd);
+    }
+
+    void Renderer::newImGuiFrame()
+    {
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+    }
+
+    void Renderer::draw()
+    {
+        vkWaitForFences(device_, 1, &getCurrentFrame().renderFence, true, 1000000000);
+        vkResetFences(device_, 1, &getCurrentFrame().renderFence);
+
+        unsigned int imageIndex;
+        vkAcquireNextImageKHR(device_, swapchain_, 1000000000, getCurrentFrame().swapSemaphore, nullptr, &imageIndex);
+
+        VkCommandBuffer cmd = getCurrentFrame().mainCommandBuffer;
+        VK_CHECK(vkResetCommandBuffer(cmd, 0), "");
+
+        VkCommandBufferBeginInfo cmdBeginInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo), "Could not begin command buffer!");
+
+        if (frameNumber_ == 0)
+        {
+            vk_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+            vk_utils::transitionImage(cmd, postProcessImage_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+            VkClearColorValue clearValue = {0.0f, 0.0f, 0.0f, 1.0f};
+            VkImageSubresourceRange clearRange = vk_utils::getImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT);
+            vkCmdClearColorImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
+            vkCmdClearColorImage(cmd, postProcessImage_.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
+        }
+        else
+        {
+            vk_utils::transitionImage(cmd, postProcessImage_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                      VK_IMAGE_LAYOUT_GENERAL);
+        }
+
+        // Draw the compute result on the intermediate image
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_.pathTracing);
+        std::vector<VkDescriptorSet> sets = {descriptorSets_.glboal, descriptorSets_.pathTracing};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayouts_.pathTracing, 0, 2,
+                                sets.data(), 0, nullptr);
+        vkCmdPushConstants(cmd, pipelineLayouts_.pathTracing, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(path_tracing::PushConstants),
+                           &ptPushConstants_);
+        vkCmdDispatch(cmd, std::ceil(swapchainExtent_.width / 16.0), std::ceil(swapchainExtent_.height / 16.0), 1);
+
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_.postProcessing);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayouts_.postProcessing, 0, 1,
+                                &descriptorSets_.postProcessing, 0,
+                                nullptr);
+        vkCmdPushConstants(cmd, pipelineLayouts_.postProcessing, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(PostProcessingPushConstants),
+                           &ppPushConstants_);
+        vkCmdDispatch(cmd, std::ceil(swapchainExtent_.width / 16.0), std::ceil(swapchainExtent_.height / 16.0), 1);
+
+        // Copy the drawing result onto the swap chain image
+        vk_utils::transitionImage(cmd, postProcessImage_.image, VK_IMAGE_LAYOUT_GENERAL,
+                                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        vk_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+        vk_utils::copyImageToImage(cmd, postProcessImage_.image, swapchainImages_[imageIndex], swapchainExtent_,
+                                   swapchainExtent_);
+
+        // Transition to draw gui onto swap chain image
+        vk_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                  VK_IMAGE_LAYOUT_GENERAL);
+        drawImgui(cmd, swapchainImageViews_[imageIndex]);
+
+        // Transition to present
+        vk_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_GENERAL,
+                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+        VK_CHECK(vkEndCommandBuffer(cmd), "Could not record command buffer!");
+
+        VkSemaphoreSubmitInfo waitInfo = vk_utils::semaphoreSubmitInfo(
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, getCurrentFrame().swapSemaphore);
+        VkSemaphoreSubmitInfo signalInfo = vk_utils::semaphoreSubmitInfo(
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, getCurrentFrame().renderSemaphore);
+        VkCommandBufferSubmitInfo cmdInfo = vk_utils::commandBufferSubmitInfo(cmd);
+        VkSubmitInfo2 submitInfo = vk_utils::submitInfo(&cmdInfo, &signalInfo, &waitInfo);
+
+        VK_CHECK(vkQueueSubmit2(queue_, 1, &submitInfo, getCurrentFrame().renderFence),
+                 "Could not submit queue!");
+
+        VkPresentInfoKHR presentInfo = {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &getCurrentFrame().renderSemaphore,
+            .swapchainCount = 1,
+            .pSwapchains = &swapchain_,
+            .pImageIndices = &imageIndex,
+        };
+
+        VK_CHECK(vkQueuePresentKHR(queue_, &presentInfo), "Could not present");
+        frameNumber_++;
+        ptPushConstants_.frame++;
+    }
+
+    void Renderer::updateGlobalDescriptors(const core::Camera& camera) const
+    {
+        void* data = globalResources_.buffer.allocation->GetMappedData();
+        CameraUniform cam = {
+            .position = camera.position,
+            .invView = glm::inverse(camera.viewMatrix),
+            .invProj = glm::inverse(camera.projMatrix)
+        };
+        memcpy(data, &cam, sizeof(CameraUniform));
+    }
+
+    void Renderer::resetAccumulation()
+    {
+        ptPushConstants_.frame = 0;
+    }
+
+
+    // UTILITIES
     AllocatedBuffer Renderer::createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage)
     {
         VkBufferCreateInfo bufferInfo = {
@@ -1106,7 +1392,7 @@ namespace renderer
         return newImage;
     }
 
-    AllocatedImage Renderer::createCubemap(std::array<stbi_uc*, 6> data, VkExtent3D size, VkFormat format,
+    AllocatedImage Renderer::createCubemap(VkExtent3D size, VkFormat format,
                                            VkImageUsageFlags usage)
     {
         AllocatedImage newImage;
@@ -1129,44 +1415,6 @@ namespace renderer
             format, newImage.image, VK_IMAGE_ASPECT_COLOR_BIT, true);
         VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &newImage.imageView), "Could not create image view!");
 
-
-        const size_t dataSize = size.width * size.height * 4 * 6;
-        AllocatedBuffer uploadbuffer = createBuffer(dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                                    VMA_MEMORY_USAGE_CPU_TO_GPU);
-
-        const size_t layerSize = dataSize / 6;
-        for (int i = 0; i < 6; ++i)
-        {
-            memcpy(static_cast<char*>(uploadbuffer.info.pMappedData) + i * layerSize, data[i], layerSize);
-        }
-
-
-        immediateSubmit([&](VkCommandBuffer cmd)
-        {
-            vk_utils::transitionCubemap(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED,
-                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-            VkBufferImageCopy copyRegion = {
-                .bufferOffset = 0,
-                .bufferRowLength = 0,
-                .bufferImageHeight = 0,
-                .imageExtent = size
-            };
-            copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            copyRegion.imageSubresource.mipLevel = 0;
-            copyRegion.imageSubresource.baseArrayLayer = 0;
-            copyRegion.imageSubresource.layerCount = 6;
-
-            // copy the buffer into the image
-            vkCmdCopyBufferToImage(cmd, uploadbuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                                   &copyRegion);
-
-            vk_utils::transitionCubemap(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                        VK_IMAGE_LAYOUT_GENERAL);
-        });
-
-        destroyBuffer(uploadbuffer);
-
         return newImage;
     }
 
@@ -1174,100 +1422,6 @@ namespace renderer
     {
         vkDestroyImageView(device_, image.imageView, nullptr);
         vmaDestroyImage(allocator_, image.image, image.allocation);
-    }
-
-
-    void Renderer::draw()
-    {
-        vkWaitForFences(device_, 1, &getCurrentFrame().renderFence, true, 1000000000);
-        vkResetFences(device_, 1, &getCurrentFrame().renderFence);
-
-        unsigned int imageIndex;
-        vkAcquireNextImageKHR(device_, swapchain_, 1000000000, getCurrentFrame().swapSemaphore, nullptr, &imageIndex);
-
-        VkCommandBuffer cmd = getCurrentFrame().mainCommandBuffer;
-        VK_CHECK(vkResetCommandBuffer(cmd, 0), "");
-
-        VkCommandBufferBeginInfo cmdBeginInfo = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        };
-        VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo), "Could not begin command buffer!");
-
-        if (frameNumber_ == 0)
-        {
-            vk_utils::transitionImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-            vk_utils::transitionImage(cmd, postProcessImage_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-            VkClearColorValue clearValue = {0.0f, 0.0f, 0.0f, 1.0f};
-            VkImageSubresourceRange clearRange = vk_utils::getImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT);
-            vkCmdClearColorImage(cmd, drawImage_.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
-            vkCmdClearColorImage(cmd, postProcessImage_.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
-        }
-        else
-        {
-            vk_utils::transitionImage(cmd, postProcessImage_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                      VK_IMAGE_LAYOUT_GENERAL);
-        }
-
-        // Draw the compute result on the intermediate image
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ptPipeline_);
-        std::vector<VkDescriptorSet> sets = {globalDescriptors_, ptDescriptors_};
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ptPipelineLayout_, 0, 2,
-                                sets.data(), 0, nullptr);
-        vkCmdPushConstants(cmd, ptPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(path_tracing::PushConstants),
-                           &ptPushConstants_);
-        vkCmdDispatch(cmd, std::ceil(swapchainExtent_.width / 16.0), std::ceil(swapchainExtent_.height / 16.0), 1);
-
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ppPipeline_);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ppPipelineLayout_, 0, 1, &ppDescriptors_, 0,
-                                nullptr);
-        vkCmdPushConstants(cmd, ppPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PostProcessingPushConstants),
-                   &ppPushConstants_);
-        vkCmdDispatch(cmd, std::ceil(swapchainExtent_.width / 16.0), std::ceil(swapchainExtent_.height / 16.0), 1);
-
-        // Copy the drawing result onto the swap chain image
-        vk_utils::transitionImage(cmd, postProcessImage_.image, VK_IMAGE_LAYOUT_GENERAL,
-                                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        vk_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED,
-                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-        vk_utils::copyImageToImage(cmd, postProcessImage_.image, swapchainImages_[imageIndex], swapchainExtent_,
-                                   swapchainExtent_);
-
-        // Transition to draw gui onto swap chain image
-        vk_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                  VK_IMAGE_LAYOUT_GENERAL);
-        drawImgui(cmd, swapchainImageViews_[imageIndex]);
-
-        // Transition to present
-        vk_utils::transitionImage(cmd, swapchainImages_[imageIndex], VK_IMAGE_LAYOUT_GENERAL,
-                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-
-        VK_CHECK(vkEndCommandBuffer(cmd), "Could not record command buffer!");
-
-        VkSemaphoreSubmitInfo waitInfo = vk_utils::semaphoreSubmitInfo(
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, getCurrentFrame().swapSemaphore);
-        VkSemaphoreSubmitInfo signalInfo = vk_utils::semaphoreSubmitInfo(
-            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR, getCurrentFrame().renderSemaphore);
-        VkCommandBufferSubmitInfo cmdInfo = vk_utils::commandBufferSubmitInfo(cmd);
-        VkSubmitInfo2 submitInfo = vk_utils::submitInfo(&cmdInfo, &signalInfo, &waitInfo);
-
-        VK_CHECK(vkQueueSubmit2(queue_, 1, &submitInfo, getCurrentFrame().renderFence),
-                 "Could not submit queue!");
-
-        VkPresentInfoKHR presentInfo = {
-            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &getCurrentFrame().renderSemaphore,
-            .swapchainCount = 1,
-            .pSwapchains = &swapchain_,
-            .pImageIndices = &imageIndex,
-        };
-
-        VK_CHECK(vkQueuePresentKHR(queue_, &presentInfo), "Could not present");
-        frameNumber_++;
-        ptPushConstants_.frame++;
     }
 
     void Renderer::immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function)
@@ -1293,25 +1447,6 @@ namespace renderer
         // the fence will now block until the function commands finish execution
         VK_CHECK(vkQueueSubmit2(queue_, 1, &submit, immediateHandles_.fence), "");
         VK_CHECK(vkWaitForFences(device_, 1, &immediateHandles_.fence, true, 9999999999), "");
-    }
-
-    void Renderer::drawImgui(VkCommandBuffer cmd, VkImageView targetImageView)
-    {
-        VkRenderingAttachmentInfo colorAttachment = vk_utils::attachmentInfo(
-            targetImageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        VkRenderingInfo renderInfo = vk_utils::renderingInfo(swapchainExtent_, &colorAttachment, nullptr);
-
-        vkCmdBeginRendering(cmd, &renderInfo);
-
-        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-
-        vkCmdEndRendering(cmd);
-    }
-
-    void Renderer::newImGuiFrame()
-    {
-        ImGui_ImplVulkan_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
     }
 
 
