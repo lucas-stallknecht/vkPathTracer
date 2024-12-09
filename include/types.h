@@ -120,6 +120,7 @@ namespace path_tracing
         std::optional<std::string> colorMap;
         std::optional<std::string> roughnessMap;
         std::optional<std::string> metallicMap;
+        std::optional<std::string> normalMap;
 
         static int handleMapProperty(const std::optional<std::string>& property, std::unordered_map<std::string, int>& map, int& currentIndex) {
             if (property.has_value()) {
@@ -144,7 +145,8 @@ namespace path_tracing
         int roughnessMapIndex = -1;
         float metallic;
         int metallicMapIndex = -1;
-        glm::vec2 padding;
+        int normalMapIndex = -1;
+        float index;
     }; // 48 bytes
 
     struct BVHNode

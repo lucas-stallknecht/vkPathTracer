@@ -44,7 +44,7 @@ namespace renderer
 
         postProcessImage_ = createImage(
             {swapchainExtent_.width, swapchainExtent_.height, 1},
-            VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+            VK_FORMAT_R16G16B16A16_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, false
         );
         deletionQueue_.push_function([=]()
@@ -1000,6 +1000,8 @@ namespace renderer
                 .metallic = mesh.material.metallic,
                 .metallicMapIndex = path_tracing::Material::handleMapProperty(mesh.material.metallicMap, texturePaths,
                                                                               currentTexIndex),
+                .normalMapIndex = path_tracing::Material::handleMapProperty(mesh.material.normalMap, texturePaths,
+                                                               currentTexIndex),
             };
             scenemMterials.push_back(m);
             sceneMeshInfos.push_back(offsets);
@@ -1123,8 +1125,13 @@ namespace renderer
             VkExtent3D texSize = {1, 1, 1};
             stbi_uc* data = vk_utils::loadTextureData(path, texSize);
 
-            textures_.push_back(createImage(data, texSize, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT,
-                                            false));
+            // TODO remove temporary solution
+            if(path.find("normal") != std::string::npos)
+                textures_.push_back(createImage(data, texSize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT,
+                                        false));
+            else
+                textures_.push_back(createImage(data, texSize, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT,
+                        false));
 
             texturesInfo.emplace_back(globalResources_.defaultLinearSampler, textures_.back().imageView,
                                       VK_IMAGE_LAYOUT_GENERAL);

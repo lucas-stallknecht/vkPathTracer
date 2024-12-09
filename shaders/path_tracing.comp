@@ -26,6 +26,7 @@ struct Material {
     int roughnessMapIndex;
     float metallic;
     int metallicMapIndex;
+    int normalMapIndex;
 };
 
 struct Node {
@@ -197,6 +198,16 @@ vec3 calculateBarycentric(vec3 pos, vec3 a, vec3 b, vec3 c)
     return bar;
 }
 
+vec3 calculateTangent(vec3 p0, vec3 p1, vec3 p2, vec2 uv0, vec2 uv1, vec2 uv2) {
+    vec3 edge1 = p1 - p0; vec3 edge2 = p2 - p0;
+    float deltaU1 = uv1.x - uv0.x;
+    float deltaV1 = uv1.y - uv0.y;
+    float deltaU2 = uv2.x - uv0.x;
+    float deltaV2 = uv2.y - uv0.y;
+    float f = 1 / (deltaU1 * deltaV2 - deltaU2 * deltaV1);
+    return normalize(f * (deltaV2 * edge1 - deltaV1 * edge2));
+}
+
 HitInfo intersect(Ray ray) {
     HitInfo hi;
     hi.dist = 1e10;
@@ -276,6 +287,16 @@ vec3 trace(Ray ray, inout uint seed) {
         if(hi.material.metallicMapIndex > -1) {
             metallic = texture(textures[hi.material.metallicMapIndex], uv).r;
         }
+        if(hi.material.normalMapIndex > -1) {
+            vec3 tangent = calculateTangent(v0.pos, v1.pos, v2.pos, vec2(v0.uv1, v0.uv2), vec2(v1.uv1, v1.uv2), vec2(v2.uv1, v2.uv2));
+            vec3 bitangent = cross(tangent, hi.normal);
+            mat3 TBN = mat3(tangent, bitangent, hi.normal);
+
+            vec3 bumpedNormal = texture(textures[hi.material.normalMapIndex], uv).rgb;
+            bumpedNormal = normalize(2.0 * bumpedNormal - vec3(1.0));
+            hi.normal = normalize(TBN * bumpedNormal);
+        }
+
 
         // we assumed that emissiveCol is the same as diffuseCol for the emissive objects (1 less mat component to share)
         //                    emitted light                                 the incomming light will be tinted by all the objects

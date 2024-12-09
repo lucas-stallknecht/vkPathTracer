@@ -114,6 +114,8 @@ namespace path_tracing
             outputMesh.material.metallic = mat.metallic;
             if (mat.metallic_texname != "")
                 outputMesh.material.metallicMap = mat.metallic_texname;
+            if (mat.bump_texname != "")
+                outputMesh.material.normalMap = mat.bump_texname;
         }
 
         std::cout << outputMesh.geometry.vertices_.size() << std::endl;

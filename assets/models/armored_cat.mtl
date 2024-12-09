@@ -15,3 +15,4 @@ anisor 0.000000
 map_Kd assets/textures/cat_baseColor.png
 map_Pm assets/textures/cat_metallic.png
 map_Pr assets/textures/cat_roughness.png
+map_Bump assets/textures/cat_normal.png
