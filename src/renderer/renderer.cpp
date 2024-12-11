@@ -32,7 +32,7 @@ namespace renderer
         {
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
-            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 30},
         };
         globalDescriptorAllocator_.initPool(device_, 10, sizes);
 
@@ -586,7 +586,7 @@ namespace renderer
         // PT-Descriptors
         vk_utils::DescriptorLayoutBuilder builder;
         builder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-        builder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 20);
+        builder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 30);
 
         VkDescriptorBindingFlags bindingFlgas[2] = {
             0, VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
@@ -598,7 +598,7 @@ namespace renderer
         };
         descriptorLayouts_.pathTracing = builder.build(device_, VK_SHADER_STAGE_COMPUTE_BIT, &bindingFlagsInfo);
 
-        const uint32_t maxTextureDescCount = 20;
+        const uint32_t maxTextureDescCount = 30;
         VkDescriptorSetVariableDescriptorCountAllocateInfo texturesVariableInfo = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
             .descriptorSetCount = 1,
@@ -977,22 +977,22 @@ namespace renderer
         std::vector<path_tracing::GPUMaterial> scenemMterials;
         std::vector<path_tracing::MeshInfo> sceneMeshInfos;
 
-        std::unordered_map<std::string, int> texturePaths;
+        std::unordered_map<std::string, path_tracing::TextureIterationSettings> texturePaths;
         int currentTexIndex = -1;
 
         path_tracing::MeshInfo offsets{};
 
         for (const auto& mesh : scene)
         {
-            sceneVertices.insert(sceneVertices.end(), mesh.geometry.vertices_.begin(), mesh.geometry.vertices_.end());
-            sceneTriangles.insert(sceneTriangles.end(), mesh.geometry.triangles_.begin(),
-                                  mesh.geometry.triangles_.end());
-            sceneNodes.insert(sceneNodes.end(), mesh.geometry.nodes_.begin(), mesh.geometry.nodes_.end());
+            sceneVertices.insert(sceneVertices.end(), mesh.geometry.vertices.begin(), mesh.geometry.vertices.end());
+            sceneTriangles.insert(sceneTriangles.end(), mesh.geometry.triangles.begin(),
+                                  mesh.geometry.triangles.end());
+            sceneNodes.insert(sceneNodes.end(), mesh.geometry.nodes.begin(), mesh.geometry.nodes.end());
 
             path_tracing::GPUMaterial m = {
                 .baseCol = mesh.material.color,
                 .baseColMapIndex = path_tracing::Material::handleMapProperty(mesh.material.colorMap, texturePaths,
-                                                                             currentTexIndex),
+                                                                             currentTexIndex, true),
                 .emissiveStrength = mesh.material.emissiveStrength,
                 .roughness = mesh.material.roughness,
                 .roughnessMapIndex = path_tracing::Material::handleMapProperty(mesh.material.roughnessMap, texturePaths,
@@ -1006,9 +1006,9 @@ namespace renderer
             scenemMterials.push_back(m);
             sceneMeshInfos.push_back(offsets);
 
-            offsets.vertexOffset += mesh.geometry.vertices_.size();
-            offsets.triangleOffset += mesh.geometry.triangles_.size();
-            offsets.nodeOffset += mesh.geometry.nodes_.size();
+            offsets.vertexOffset += mesh.geometry.vertices.size();
+            offsets.triangleOffset += mesh.geometry.triangles.size();
+            offsets.nodeOffset += mesh.geometry.nodes.size();
             offsets.materialIndex++;
         }
 
@@ -1097,14 +1097,15 @@ namespace renderer
         };
         destroyBuffer(staging);
 
-        std::vector<std::string> texVector;
-        texVector.resize(texturePaths.size());
-        for (auto& tex : texturePaths)
-            texVector[tex.second] = (tex.first);
 
-        if (texVector.size() > 0)
+        std::vector<path_tracing::TextureCreateSettings> createSettingsVector;
+        createSettingsVector.resize(texturePaths.size());
+        for (auto& tex : texturePaths)
+            createSettingsVector[tex.second.index] = {tex.first, tex.second.sRGB};
+
+        if (createSettingsVector.size() > 0)
         {
-            uploadTextures(texVector);
+            uploadTextures(createSettingsVector);
         }
 
         deletionQueue_.push_function([&]()
@@ -1117,20 +1118,19 @@ namespace renderer
         });
     }
 
-    void Renderer::uploadTextures(const std::vector<std::string>& texturePaths)
+    void Renderer::uploadTextures(const std::vector<path_tracing::TextureCreateSettings>& settings)
     {
         std::vector<VkDescriptorImageInfo> texturesInfo;
-        for (auto& path : texturePaths)
+        for (auto& sett : settings)
         {
             VkExtent3D texSize = {1, 1, 1};
-            stbi_uc* data = vk_utils::loadTextureData(path, texSize);
+            stbi_uc* data = vk_utils::loadTextureData(sett.name, texSize);
 
-            // TODO remove temporary solution
-            if(path.find("normal") != std::string::npos)
-                textures_.push_back(createImage(data, texSize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT,
+            if(sett.sRGB)
+                textures_.push_back(createImage(data, texSize, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT,
                                         false));
             else
-                textures_.push_back(createImage(data, texSize, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT,
+                textures_.push_back(createImage(data, texSize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT,
                         false));
 
             texturesInfo.emplace_back(globalResources_.defaultLinearSampler, textures_.back().imageView,

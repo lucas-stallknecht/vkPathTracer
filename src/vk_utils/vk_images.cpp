@@ -1,6 +1,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "vk_images.h"
 #include <iostream>
+#include <format>
 
 
 namespace vk_utils
@@ -124,7 +125,7 @@ namespace vk_utils
 
         if (!pixels)
         {
-            throw std::runtime_error("failed to load texture image!");
+            throw std::runtime_error(std::format("Failed to load texture image : {} \n", path));
         }
         return pixels;
     }

@@ -59,7 +59,7 @@ namespace renderer
         void newImGuiFrame();
         void render(const core::Camera& camera);
         void uploadPathTracingScene(const std::vector<path_tracing::Mesh>& scene);
-        void uploadTextures(const std::vector<std::string>& texturePaths);
+        void uploadTextures(const std::vector<path_tracing::TextureCreateSettings>& settings);
         void uploadEnvMap(const std::string& path);
         void resetAccumulation();
         void cleanup();

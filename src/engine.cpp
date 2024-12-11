@@ -8,13 +8,18 @@ namespace engine
         initWindow();
         initImGui();
         renderer_.init(window_);
-        camera_.position = glm::vec3(0.0, 0.0, 1.5);
+        camera_.position = glm::vec3(0.0, 0.0, 1.2);
 
-        path_tracing::Mesh armoredCat = path_tracing::loadFromObj("./assets/models/armored_cat.obj");
-        // path_tracing::Mesh dragon = path_tracing::loadFromObj("./assets/models/dragon.obj");
+        // auto armoredCat = path_tracing::loadFromObj("./assets/models/armored_cat/armored_cat.obj");
+        auto halo = path_tracing::loadFromObj("./assets/models/halo_armor/halo_armor.obj");
+        auto light = path_tracing::loadFromObj("./assets/models/top_light/top_light.obj");
+        // auto dragon = path_tracing::loadFromObj("./assets/models/dragon/dragon.obj");
 
-        renderer_.uploadPathTracingScene({armoredCat});
-        renderer_.uploadEnvMap("./assets/skyboxes/little_paris_eiffel_tower_2k.hdr");
+        std::vector<path_tracing::Mesh> scene = halo;
+        scene.insert(scene.end(), light.begin(), light.end());
+
+        renderer_.uploadPathTracingScene(scene);
+        renderer_.uploadEnvMap("./assets/skyboxes/dikhololo_night_2k.hdr");
     }
 
     void Engine::initWindow()
@@ -154,8 +159,13 @@ namespace engine
                 bool change = false;
                 if (ImGui::CollapsingHeader("Path tracing", ImGuiTreeNodeFlags_DefaultOpen))
                 {
-                    change |= ImGui::SliderInt("Bounces count",
-                                               reinterpret_cast<int*>(&renderer_.ptPushConstants_.bouncesCount), 0, 10);
+                    change |= ImGui::SliderInt("Bounces",
+                                               reinterpret_cast<int*>(&renderer_.ptPushConstants_.bounces), 0, 10);
+                    change |= ImGui::SliderInt("Samples",
+                           reinterpret_cast<int*>(&renderer_.ptPushConstants_.samples), 0, 10);
+                    change |= ImGui::SliderFloat("Jitter",
+                               &renderer_.ptPushConstants_.jitter, 0.0, 2.0);
+
                     change |= ImGui::SliderFloat("Environment map intensity",
                                                  &renderer_.ptPushConstants_.envMapIntensity, 0.0, 40.0);
                     change |= ImGui::SliderInt("Show environment map",
