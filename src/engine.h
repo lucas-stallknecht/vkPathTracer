@@ -27,7 +27,7 @@ namespace engine
 
         GLFWwindow* window_ = nullptr;
         ImGuiIO* io = nullptr;
-        core::Camera camera_ = {40.0f, static_cast<float>(WIDTH) / static_cast<float>(HEIGHT)};
+        core::Camera camera_ = {35.0f, static_cast<float>(WIDTH) / static_cast<float>(HEIGHT)};
         renderer::Renderer renderer_{};
 
         // Controls

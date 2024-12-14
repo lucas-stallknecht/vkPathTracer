@@ -205,7 +205,7 @@ namespace path_tracing
         uint32_t samples = 1;
         float jitter = 1.0;
         uint32_t smoothShading = 1;
-        float envMapIntensity = 5.0;
+        float envMapIntensity = 0.0;
         uint32_t envMapVisible = 0;
     };
 }

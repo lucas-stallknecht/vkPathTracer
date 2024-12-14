@@ -8,12 +8,14 @@ namespace engine
         initWindow();
         initImGui();
         renderer_.init(window_);
-        camera_.position = glm::vec3(0.0, 0.0, 1.2);
+        camera_.position = glm::vec3(0.0, 0.0, 1.8);
 
-        // auto armoredCat = path_tracing::loadFromObj("./assets/models/armored_cat/armored_cat.obj");
         auto halo = path_tracing::loadFromObj("./assets/models/halo_armor/halo_armor.obj");
+        // auto sphere = path_tracing::loadFromObj("./assets/models/sphere.obj");
+        // sphere[0].material.color = glm::vec3(1.0, 1.0, 1.0);
+        // sphere[0].material.metallic = 0.0;
+        // sphere[0].material.roughness = 0.0;
         auto light = path_tracing::loadFromObj("./assets/models/top_light/top_light.obj");
-        // auto dragon = path_tracing::loadFromObj("./assets/models/dragon/dragon.obj");
 
         std::vector<path_tracing::Mesh> scene = halo;
         scene.insert(scene.end(), light.begin(), light.end());

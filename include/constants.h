@@ -11,8 +11,8 @@
     #define ENABLE_VALIDATION_LAYERS
 #endif
 
-constexpr uint32_t WIDTH = 1400;
-constexpr uint32_t HEIGHT = 800;
+constexpr uint32_t WIDTH = 1700;
+constexpr uint32_t HEIGHT = 950;
 constexpr uint32_t FRAME_OVERLAP = 2;
 
 const std::vector<const char*> VALIDATIONS_LAYERS = {
