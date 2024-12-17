@@ -9,6 +9,6 @@ A Vulkan port and an upgrade of my current OpenGL path tracing renderer.
 - Multiple meshes
 - HDR IBL
 - Textures and normal mapping
-- GGX Importance sampling
+- Lambertian diffuse + GGX specular BRDF
 
 
